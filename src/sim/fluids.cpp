@@ -216,6 +216,15 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
     storeFill(br, l, x, y, z, f0, rem);
     if (f0 - rem > 1e-3f) { fluidActive.insert(k); activate(x, y, z); }
   }
+  if (getenv("REALISM_DEBUG_WATER")) {
+    static int dn = 0;
+    for (auto& d : drops)
+      if ((++dn % 4000) == 0) {
+        ivec3 c = cellOf(d.p);
+        fprintf(stderr, "drop at %d %d %d v %.2f %.2f %.2f fill %.3f | below %d %d above %d\n", c.x, c.y, c.z, d.v.x, d.v.y, d.v.z, d.fill,
+                world.mat(c.x, c.y - 1, c.z), world.mat(c.x, c.y - 2, c.z), world.mat(c.x, c.y + 1, c.z));
+      }
+  }
   for (auto& d : drops) {
     if (d.fill < W_MIN) { g_wlost[3] += d.fill; continue; }
     Cell c;
