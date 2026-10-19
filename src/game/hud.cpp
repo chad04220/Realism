@@ -504,7 +504,7 @@ bool Game::selftest() {
         for (int z = 0; z < N; z += 1) {
           for (int x = 0; x < N; x++) {
             float hcol = 0;
-            for (int y = 0; y < H; y++) if (W.mat(x0 + x, y0 + y, z0 + z) == WATER) { float f = W.brick(x0 + x, y0 + y, z0 + z)->fuel[lidx(x0 + x, y0 + y, z0 + z)]; hcol = y + std::min(1.f, f > 0 ? f : 1.f); }
+            for (int y = 0; y < H; y++) if (W.mat(x0 + x, y0 + y, z0 + z) == WATER) { float f = W.brick(x0 + x, y0 + y, z0 + z)->fuel[lidx(x0 + x, y0 + y, z0 + z)]; hcol += f > 0 ? f : 1; }
             fprintf(stderr, "%4.1f", hcol);
           }
           fprintf(stderr, "\n");
