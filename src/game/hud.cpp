@@ -429,6 +429,25 @@ bool Game::selftest() {
     fprintf(stderr, "  steel bar peak %.0f C\n", tmax);
     check(tmax > 500, "torch heats steel to a glow");
   }
+  // Radiation: a glowing block warms a plank 20 cm away across open air.
+  {
+    Volume hv(8, 8, 8), pv(2, 8, 8);
+    uint32_t hc = newComp(makePart("Hot block", "Test", joints::welded));
+    uint32_t pc = newComp(makePart("Target plank", "Test", joints::welded));
+    for (int x = 0; x < 8; x++) for (int y = 0; y < 8; y++) for (int z = 0; z < 8; z++) { hv.set(x, y, z, STEEL, hc); }
+    for (int x = 0; x < 2; x++) for (int y = 0; y < 8; y++) for (int z = 0; z < 8; z++) pv.set(x, y, z, PINE, pc);
+    hv.forEach([&](int, int, int, Brick* br, int l) { br->temp[l] = 1100; });
+    Body* hb = spawnBody(sim, std::move(hv), vec3(3.0f, 4.5f, 3.0f));
+    Body* pb = spawnBody(sim, std::move(pv), vec3(3.0f + 0.1f + 0.2f + 0.025f, 4.5f, 3.0f));
+    hb->frozen = pb->frozen = true;
+    hb->heat.reset(hb->vol.bricks.size()); hb->heat.add(0);
+    int pid = pb->id;
+    for (int i = 0; i < 120; i++) sim.step(1.f / 60.f);
+    float tmax = 0;
+    for (auto& b : sim.bodies) if (b->id == pid) b->vol.forEach([&](int, int, int, Brick* br, int l) { tmax = std::max(tmax, br->temp[l]); });
+    fprintf(stderr, "  plank facing a 1100 C block reached %.0f C (radiators %zu, %.0f W)\n", tmax, sim.radiators.size(), sim.radiantTotal);
+    check(tmax > 40, "radiant heat crosses an air gap");
+  }
   fprintf(stderr, "%d failure(s)\n", fails);
   return fails == 0;
 }

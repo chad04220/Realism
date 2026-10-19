@@ -37,6 +37,12 @@ struct SimEvent {
   uint32_t comp;
 };
 
+struct Radiator {
+  vec3 p, n;      // world position and outward normal
+  float W = 0;    // radiated power, watts
+  int body = -1;  // owning body id, -1 = world
+};
+
 struct Hit {
   bool hit = false;
   int body = -1;          // index into bodies, -1 = world
@@ -108,6 +114,9 @@ class Sim {
   void removeBodyVoxel(Body& b, int x, int y, int z, bool debris);
 
   Hit raycast(const vec3& o, const vec3& d, float maxDist, int ignoreBody = -1) const;
+  float radiantFlux(const vec3& p) const;   // W/m^2 of thermal radiation arriving here
+  std::vector<Radiator> radiators;          // this thermal tick's hot surfaces, strongest first
+  float radiantTotal = 0;
 
   // Damage and energy delivery.
   void impact(const Hit& h, float energy, const vec3& dir, bool canDetach = true);
@@ -129,6 +138,7 @@ class Sim {
   // Systems (separate translation units).
   void stepPhysics(float dt);
   void stepThermal(float dtThermal);
+  void radiate(float dtThermal);
   void stepFluids();
   void stepElectric(float dt);
   void stepDevices(float dt);

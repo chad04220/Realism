@@ -47,6 +47,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
   Jobs::get().parallelFor((int)list.size(), 2, [&](int b0, int b1, int) {
     std::vector<ThermEvent> loc;
     std::vector<std::pair<int, float>> airHeat;
+    std::vector<Radiator> rads;
     for (int li = b0; li < b1; li++) {
       int bi = list[li];
       Brick* br = v.brickAt(bi);
@@ -115,6 +116,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
         float C = M.heatCap;
         float sumG = 0, sumGT = 0, extra = 0;
         int airFaces = 0;
+        vec3 nrm(0);
         bool water = false;
         for (int k = 0; k < 6; k++) {
           int xx = x + DIRS6[k][0], yy = y + DIRS6[k][1], zz = z + DIRS6[k][2];
@@ -129,7 +131,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
             n = nb ? nb->mat[nl] : AIR;
             if (n) { Tn = nb->temp[nl]; nf = nb->flags[nl]; }
           }
-          if (n == AIR || MATS[n].phase == GAS) { airFaces++; continue; }
+          if (n == AIR || MATS[n].phase == GAS) { airFaces++; nrm += vec3((float)DIRS6[k][0], (float)DIRS6[k][1], (float)DIRS6[k][2]); continue; }
           const Material& N = MATS[n];
           float G = 2 * M.k * N.k / (M.k + N.k) * vs;
           sumG += G;
@@ -172,11 +174,25 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
           if (T < M.flameTemp * 1.15f) extra += P;
           // Most of a flame's heat is released in the gas above the surface
           // and carried off by the air rather than soaking into the fuel.
-          if (airCell >= 0 && airFaces > 0) airHeat.push_back({airCell, 0.6f * P * dt / std::sqrt(s.cfg.thermalWarp)});
+          if (airCell >= 0 && airFaces > 0) airHeat.push_back({airCell, 0.45f * P * dt / std::sqrt(s.cfg.thermalWarp)});
           if (water) loc.push_back({{x, y, z}, T_EXTINGUISH});
           br->fuel[l] -= dt;
           if (br->fuel[l] <= 0) loc.push_back({{x, y, z}, T_BURNOUT});
           burnCount++;
+        }
+        // Hot surfaces and flames shine heat across the open air (rays cast later).
+        if (airFaces && (T > 180 || (fl & F_BURN))) {
+          float W = airFaces * A * EMISS * SIGMA * (Tk * Tk * Tk * Tk - Tamb4);
+          if (fl & F_BURN) W += 0.25f * M.power;
+          if (W > 0 && length2(nrm) > 0) {
+            vec3 lp(x + 0.5f, y + 0.5f, z + 0.5f), n = normalize(nrm);
+            Radiator r;
+            r.p = owner ? owner->toWorld(lp, vs) : lp * vs;
+            r.n = owner ? owner->rot.rotate(n) : n;
+            r.W = W;
+            r.body = owner ? owner->id : -1;
+            rads.push_back(r);
+          }
         }
         // Point-implicit update: unconditionally stable for conduction.
         float Tnew = (T + dt / C * (sumGT + extra)) / (1 + dt / C * sumG);
@@ -206,8 +222,9 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
       }
       sc.keep[li] = active;
     }
-    if (!loc.empty() || !airHeat.empty()) {
+    if (!loc.empty() || !airHeat.empty() || !rads.empty()) {
       std::lock_guard<std::mutex> lk(mu);
+      s.radiators.insert(s.radiators.end(), rads.begin(), rads.end());
       events.insert(events.end(), loc.begin(), loc.end());
       airHeatAll.insert(airHeatAll.end(), airHeat.begin(), airHeat.end());
     }
@@ -418,6 +435,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
 
 void Sim::stepThermal(float dt) {
   int burning = 0, hot = 0;
+  radiators.clear();
   simulateVolume(*this, world, worldHot, dt, nullptr, burning, hot);
   for (size_t i = 0; i < bodies.size(); i++) {
     Body* b = bodies[i].get();
@@ -427,4 +445,84 @@ void Sim::stepThermal(float dt) {
   }
   stats.burning = burning;
   stats.hot = hot;
+  radiate(dt);
+}
+
+// Thermal radiation crosses open air: each tick a fixed budget of rays leaves
+// the hot surfaces (chosen in proportion to what they emit, cosine-weighted
+// about the surface normal) and the energy lands on whatever they hit first,
+// so a fire warms the logs beside it and a glowing ingot scorches the bench
+// it hangs over. Rays that reach the sky are lost.
+void Sim::radiate(float dt) {
+  radiantTotal = 0;
+  if (radiators.empty()) return;
+  // The strongest emitters first; flux queries only look at those.
+  std::sort(radiators.begin(), radiators.end(), [](const Radiator& a, const Radiator& b) { return a.W > b.W; });
+  double total = 0;
+  for (auto& r : radiators) total += r.W;
+  radiantTotal = (float)total;
+  const int rays = 320;
+  const float Eray = (float)(total * dt / rays);
+  // Systematic sampling along the cumulative power gives a low-variance pick.
+  struct Ray { vec3 o, d; int body; };
+  std::vector<Ray> rs(rays);
+  double step = total / rays, acc = rng().f() * step, cum = 0;
+  size_t i = 0;
+  for (int k = 0; k < rays; k++, acc += step) {
+    while (i + 1 < radiators.size() && cum + radiators[i].W < acc) { cum += radiators[i].W; i++; }
+    const Radiator& r = radiators[i];
+    // Cosine-weighted direction about the normal.
+    float u1 = rng().f(), u2 = rng().f();
+    float rr = std::sqrt(u1), phi = 2 * PI * u2;
+    vec3 t = std::fabs(r.n.y) < 0.9f ? normalize(cross(r.n, vec3(0, 1, 0))) : normalize(cross(r.n, vec3(1, 0, 0)));
+    vec3 b = cross(r.n, t);
+    vec3 d = normalize(t * (rr * std::cos(phi)) + b * (rr * std::sin(phi)) + r.n * std::sqrt(std::max(0.f, 1 - u1)));
+    rs[k] = {r.p + r.n * (vs * 0.8f), d, r.body};
+  }
+  std::vector<Hit> hitv(rays);
+  Jobs::get().parallelFor(rays, 16, [&](int k0, int k1, int) {
+    for (int k = k0; k < k1; k++) hitv[k] = raycast(rs[k].o, rs[k].d, 6.f);
+  });
+  std::vector<std::pair<Hit, float>> hits;
+  for (int k = 0; k < rays; k++) {
+    const Hit& h = hitv[k];
+    if (!h.hit) continue;
+    if (h.body >= 0 && bodies[h.body]->id == rs[k].body && h.t < vs * 1.5f) continue;
+    hits.push_back({h, Eray});
+  }
+  for (auto& [h, E] : hits) {
+    Body* B = h.body >= 0 ? bodies[h.body].get() : nullptr;
+    Volume& v = B ? B->vol : world;
+    Brick* br = v.brick(h.cell.x, h.cell.y, h.cell.z);
+    if (!br) continue;
+    int l = lidx(h.cell.x, h.cell.y, h.cell.z);
+    uint8_t m = br->mat[l];
+    if (!m) continue;
+    // Dark, rough surfaces absorb most of it; polished metal reflects.
+    float absorb = MATS[m].metal > 0.5f ? 0.35f : 0.9f;
+    br->temp[l] = std::min(3600.f, br->temp[l] + E * absorb / MATS[m].heatCap);
+    if (B) B->heat.add(v.bindex(h.cell.x, h.cell.y, h.cell.z)); else worldHot.add(v.bindex(h.cell.x, h.cell.y, h.cell.z));
+  }
+}
+
+// Radiant flux (W/m^2) arriving at a point from the strongest emitters, with
+// line of sight. Used for the warmth you feel standing near a fire.
+float Sim::radiantFlux(const vec3& p) const {
+  float F = 0;
+  size_t n = std::min<size_t>(radiators.size(), 48);
+  for (size_t i = 0; i < n; i++) {
+    const Radiator& r = radiators[i];
+    vec3 d = p - r.p;
+    float d2 = std::max(0.04f, length2(d));
+    float dist = std::sqrt(d2);
+    float c = dot(r.n, d) / dist;
+    if (c <= 0) continue;
+    Hit h = raycast(r.p + r.n * (vs * 0.8f), d / dist, dist - 0.1f);
+    if (h.hit) continue;
+    F += r.W * c / (PI * d2);
+  }
+  // The strongest emitters stand in for the rest.
+  float shown = 0;
+  for (size_t i = 0; i < n; i++) shown += radiators[i].W;
+  return shown > 0 ? F * radiantTotal / shown : 0;
 }
