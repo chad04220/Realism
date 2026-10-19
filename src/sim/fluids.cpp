@@ -78,9 +78,6 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
     }
     return -1;
   };
-  struct Acc { float dm = 0, inM = 0, inMT = 0; };
-  std::unordered_map<int64_t, Acc> acc;
-  acc.reserve(list.size() * 2);
   if (waterFlow.size() != air.T.size()) { waterFlow.assign(air.T.size(), vec3(0)); waterFlowN.assign(air.T.size(), 0); }
   std::fill(waterFlowN.begin(), waterFlowN.end(), 0.f);
   std::vector<vec3> flowNew(waterFlow.size(), vec3(0));
@@ -89,99 +86,6 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
     if (cx < 0 || cy < 0 || cz < 0 || cx >= air.nx || cy >= air.ny || cz >= air.nz) return -1;
     return air.cid(cx, cy, cz);
   };
-  struct Drop { vec3 p, v; float fill, temp; };
-  std::vector<Drop> drops;
-  for (int64_t k : list) {
-    ivec3 q = unpackKey(k);
-    int x = q.x, y = q.y, z = q.z;
-    Brick* br = world.brick(x, y, z);
-    if (!br) continue;
-    int l = lidx(x, y, z);
-    if (br->mat[l] != WATER) continue;
-    float T = br->temp[l];
-    float f0 = fillOf(br->fuel[l]);
-    float rem = f0;
-    Acc& self = acc[k];
-    int cc = coarse(x, y, z);
-    if (cc >= 0) waterFlowN[cc] += 1;
-    ivec3 best(0, 0, 0);
-    float bestF = 0;
-    auto move = [&](int nx_, int ny_, int nz_, float f, bool force = false) {
-      if (f <= 0) return;
-      if (!force && f < W_MIN && world.mat(nx_, ny_, nz_) == AIR) return;  // too little to wet a new cell
-      if (f > bestF) { bestF = f; best = ivec3(nx_, ny_, nz_); }
-      rem -= f;
-      self.dm -= f;
-      Acc& o = acc[packKey(nx_, ny_, nz_)];
-      o.dm += f; o.inM += f; o.inMT += f * T;
-      if (cc >= 0) flowNew[cc] += vec3((float)(nx_ - x), (float)(ny_ - y), (float)(nz_ - z)) * (f * vs / tick);
-    };
-    // Nothing under it: it falls freely as a droplet.
-    float below = fillAt(x, y - 1, z);
-    if (below == 0 && fillAt(x, y - 2, z) == 0 && fillAt(x, y + 1, z) <= 0) {
-      drops.push_back({cellCenter(x, y, z), vec3(rng().range(-.05f, .05f), -0.8f, rng().range(-.05f, .05f)), rem, T});
-      self.dm -= rem;
-      continue;
-    }
-    // Down: the cell below fills first.
-    if (below >= 0 && below < 1) move(x, y - 1, z, std::min(rem, 1 - below), true);
-    // Overfull (several flows arrived at once): the excess rises up the column.
-    if (rem > 1) {
-      int t = topOf(x, y + 1, z);
-      if (t >= 0) move(x, t, z, rem - 1, true);
-    }
-    // Sideways, down the difference in head.
-    float hE = fillAt(x + 1, y, z), hW = fillAt(x - 1, y, z), hN = fillAt(x, y, z + 1), hS = fillAt(x, y, z - 1);
-    float hs = headAt(x, y, z);
-    auto hOf = [&](float f, int dx, int dz) { return f < 0 ? hs : f == 0 ? 0.f : headAt(x + dx, y, z + dz); };
-    struct Out { int dx, dz; float f, nf, h; };
-    Out outs[4] = {{1, 0, 0, hE, hOf(hE, 1, 0)}, {-1, 0, 0, hW, hOf(hW, -1, 0)}, {0, 1, 0, hN, hOf(hN, 0, 1)}, {0, -1, 0, hS, hOf(hS, 0, -1)}};
-    float avail = std::min(rem, 1.f);
-    if (avail > 0) {
-      float sum = 0;
-      for (auto& o : outs) {
-        // A small dead band lets level water come to rest.
-        o.f = o.nf < 0 ? 0 : std::clamp((hs - o.h) / vs - 0.02f, 0.f, 1.f) * 0.24f;
-        sum += o.f;
-      }
-      float scale = sum > avail * 0.9f ? avail * 0.9f / sum : 1.f;
-      for (auto& o : outs) {
-        float f = o.f * scale;
-        if (f < 0.003f) continue;
-        int nx_ = x + o.dx, nz_ = z + o.dz;
-        if (o.nf == 0 && fillAt(nx_, y - 1, nz_) == 0) {
-          // Over an edge or out of a hole: it leaves as a jet, pushed by the
-          // water standing behind it.
-          vec3 dir((float)o.dx, 0, (float)o.dz);
-          float hj = std::max({hs, outs[0].nf > 0 ? outs[0].h : 0.f, outs[1].nf > 0 ? outs[1].h : 0.f, outs[2].nf > 0 ? outs[2].h : 0.f,
-                               outs[3].nf > 0 ? outs[3].h : 0.f});
-          vec3 v0 = hj > 1.5f * vs ? dir * std::sqrt(2 * g * (hj - 0.5f * vs)) : dir * 0.3f;  // Torricelli
-          drops.push_back({cellCenter(x, y, z) + dir * (vs * 0.9f), v0 + vec3(rng().range(-.06f, .06f), rng().range(-.04f, .04f), rng().range(-.06f, .06f)), f, T});
-          rem -= f; self.dm -= f;
-          if (cc >= 0) flowNew[cc] += v0;
-          continue;
-        }
-        if (o.nf >= 0.999f) {
-          // Into a full cell: it rises to the top of that column.
-          int t = topOf(nx_, y, nz_);
-          if (t >= 0) move(nx_, t, nz_, f);
-          continue;
-        }
-        move(nx_, y, nz_, f);
-      }
-    }
-    // Don't leave a scrap too thin to keep: it goes with the main flow.
-    if (rem > 0 && rem < W_MIN && bestF > 0) move(best.x, best.y, best.z, rem, true);
-    if (f0 - rem > 1e-3f) {
-      fluidActive.insert(k);  // still moving: stay awake
-      static int dbgN = 0;
-      if (getenv("REALISM_DEBUG_WATER") && x > 100 && (++dbgN % 30000) == 0) {
-        fprintf(stderr, "awake %d %d %d f0 %.3f moved %.3f hs %.3f below %.2f | E %.2f/%.3f W %.2f/%.3f N %.2f/%.3f S %.2f/%.3f\n", x, y, z, f0, f0 - rem, hs, below,
-                outs[0].nf, outs[0].h, outs[1].nf, outs[1].h, outs[2].nf, outs[2].h, outs[3].nf, outs[3].h);
-      }
-    }
-  }
-  // Apply.
   auto activate = [&](int x, int y, int z) {
     for (int dy = -1; dy <= 1; dy++)
       for (auto& d : DIRS6) {
@@ -190,46 +94,122 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
         if (m && isFluidish(m)) fluidActive.insert(packKey(xx, yy, zz));
       }
   };
-  for (auto& [key, a] : acc) {
-    ivec3 q = unpackKey(key);
+  // Store a fill, telling the renderer when the visible level changes.
+  auto storeFill = [&](Brick* b, int l, int x, int y, int z, float oldF, float f) {
+    b->fuel[l] = f >= 0.9999f ? 0.f : f;
+    if ((int)(std::min(1.f, oldF) * 255) != (int)(std::min(1.f, f) * 255)) world.markDirty(x, y, z);
+  };
+  struct Drop { vec3 p, v; float fill, temp; };
+  std::vector<Drop> drops;
+  // Moves are applied as they are decided (in place), each limited by the
+  // room left in its target, so water is conserved exactly and no cell is
+  // ever filled past full by several neighbours at once.
+  for (int64_t k : list) {
+    ivec3 q = unpackKey(k);
     int x = q.x, y = q.y, z = q.z;
     Brick* br = world.brick(x, y, z);
+    if (!br) continue;
     int l = lidx(x, y, z);
-    uint8_t m = br ? br->mat[l] : (uint8_t)AIR;
-    if (m == AIR) {
-      if (a.dm < W_MIN) { g_wlost[0] += a.dm; continue; }  // a trickle too thin to hold
-      Cell c;
-      c.mat = WATER; c.temp = a.inMT / std::max(1e-6f, a.inM); c.fuel = a.dm;
-      world.put(x, y, z, c);
-      if (c.temp != AMBIENT) markHot(world, worldHot, x, y, z);
-      fluidActive.insert(key);
-      activate(x, y, z);
-      continue;
-    }
-    if (m != WATER) { g_wlost[1] += a.dm; continue; }  // something else moved in this tick
-    float old = fillOf(br->fuel[l]);
-    float nf = old + a.dm;
-    if (nf < W_MIN) {
-      g_wlost[2] += nf;
+    if (br->mat[l] != WATER) continue;
+    const float T = br->temp[l];
+    const float f0 = fillOf(br->fuel[l]);
+    float rem = f0;
+    int cc = coarse(x, y, z);
+    if (cc >= 0) waterFlowN[cc] += 1;
+    ivec3 best(0, 0, 0);
+    float bestF = 0;
+    auto give = [&](int nx_, int ny_, int nz_, float f, bool tiny = false) -> float {
+      float tf = fillAt(nx_, ny_, nz_);
+      if (tf < 0) return 0;
+      f = std::min({f, rem, 1.f - tf});
+      if (f <= 1e-4f) return 0;
+      if (tf == 0) {
+        if (f < W_MIN && !tiny) return 0;  // too little to wet a new cell
+        Cell c;
+        c.mat = WATER; c.temp = T; c.fuel = f >= 0.9999f ? 0.f : f;
+        world.put(nx_, ny_, nz_, c);
+      } else {
+        Brick* nb = world.brick(nx_, ny_, nz_);
+        int nl = lidx(nx_, ny_, nz_);
+        nb->temp[nl] = (nb->temp[nl] * tf + T * f) / (tf + f);
+        storeFill(nb, nl, nx_, ny_, nz_, tf, tf + f);
+      }
+      if (T != AMBIENT) markHot(world, worldHot, nx_, ny_, nz_);
+      rem -= f;
+      if (f > bestF) { bestF = f; best = ivec3(nx_, ny_, nz_); }
+      fluidActive.insert(packKey(nx_, ny_, nz_));
+      activate(nx_, ny_, nz_);
+      if (cc >= 0) flowNew[cc] += vec3((float)(nx_ - x), (float)(ny_ - y), (float)(nz_ - z)) * (f * vs / tick);
+      return f;
+    };
+    float below = fillAt(x, y - 1, z);
+    if (below == 0 && fillAt(x, y - 2, z) == 0 && fillAt(x, y + 1, z) <= 0) {
+      // Nothing under it: it falls freely as a droplet.
+      drops.push_back({cellCenter(x, y, z), vec3(rng().range(-.05f, .05f), -0.8f, rng().range(-.05f, .05f)), rem, T});
       world.set(x, y, z, AIR);
       activate(x, y, z);
       continue;
     }
-    float stayed = std::max(0.f, nf - a.inM);
-    if (a.inM > 0) {
-      br->temp[l] = (stayed * br->temp[l] + a.inMT) / std::max(1e-6f, stayed + a.inM);
-      if (br->temp[l] != AMBIENT) markHot(world, worldHot, x, y, z);
+    // Down: the cell below fills first.
+    if (below >= 0 && below < 1) give(x, y - 1, z, rem, true);
+    // Overfull (a droplet landed in it): the excess rises up the column.
+    if (rem > 1) {
+      int t = topOf(x, y + 1, z);
+      if (t >= 0) give(x, t, z, rem - 1, true);
     }
-    uint8_t ob = (uint8_t)(std::min(1.f, old) * 255), nb = (uint8_t)(std::min(1.f, nf) * 255);
-    br->fuel[l] = nf;
-    if (ob != nb) world.markDirty(x, y, z);
-    if (std::fabs(a.dm) > 1e-3f) { fluidActive.insert(key); activate(x, y, z); }
-  }
-  if (getenv("REALISM_DEBUG_WATER")) {
-    double bal = 0, dr = 0;
-    for (auto& [key, a] : acc) bal += a.dm;
-    for (auto& d : drops) dr += d.fill;
-    if (std::fabs(bal + dr) > 0.01) fprintf(stderr, "water imbalance %.3f (dm %.3f drops %.3f)\n", bal + dr, bal, dr);
+    // Sideways, down the difference in head.
+    if (rem > 0) {
+      float hs = headAt(x, y, z);
+      struct Out { int dx, dz; float nf, h, f; };
+      Out outs[4] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+      float sum = 0, hj = hs;
+      for (auto& o : outs) {
+        o.nf = fillAt(x + o.dx, y, z + o.dz);
+        o.h = o.nf < 0 ? hs : o.nf == 0 ? 0.f : headAt(x + o.dx, y, z + o.dz);
+        if (o.nf > 0) hj = std::max(hj, o.h);
+        // A small dead band lets level water come to rest.
+        o.f = o.nf < 0 ? 0 : std::clamp((hs - o.h) / vs - 0.02f, 0.f, 1.f) * 0.24f;
+        sum += o.f;
+      }
+      float avail = std::min(rem, 1.f);
+      float scale = sum > avail * 0.9f ? avail * 0.9f / sum : 1.f;
+      int r0 = rng().next() & 3;
+      for (int i = 0; i < 4; i++) {
+        Out& o = outs[(i + r0) & 3];
+        float f = o.f * scale;
+        if (f < 0.003f) continue;
+        int nx_ = x + o.dx, nz_ = z + o.dz;
+        if (o.nf == 0 && fillAt(nx_, y - 1, nz_) == 0) {
+          // Over an edge or out of a hole: it leaves as a jet, pushed by the
+          // water standing behind it (Torricelli).
+          vec3 dir((float)o.dx, 0, (float)o.dz);
+          vec3 v0 = hj > 1.5f * vs ? dir * std::sqrt(2 * g * (hj - 0.5f * vs)) : dir * 0.3f;
+          f = std::min(f, rem);
+          drops.push_back({cellCenter(x, y, z) + dir * (vs * 0.9f), v0 + vec3(rng().range(-.06f, .06f), rng().range(-.04f, .04f), rng().range(-.06f, .06f)), f, T});
+          rem -= f;
+          if (cc >= 0) flowNew[cc] += v0;
+          continue;
+        }
+        if (o.nf >= 0.999f) {
+          // Into a full cell: it rises to the top of that column.
+          int t = topOf(nx_, y, nz_);
+          if (t >= 0) give(nx_, t, nz_, f);
+          continue;
+        }
+        give(nx_, y, nz_, f);
+      }
+    }
+    // Write back what's left. A scrap too thin to keep goes with the main flow.
+    br = world.brick(x, y, z);
+    if (rem < W_MIN && rem > 0 && bestF > 0) give(best.x, best.y, best.z, rem, true);
+    if (rem < W_MIN) {
+      if (rem > 0) g_wlost[2] += rem;
+      world.set(x, y, z, AIR);
+      activate(x, y, z);
+      continue;
+    }
+    storeFill(br, l, x, y, z, f0, rem);
+    if (f0 - rem > 1e-3f) { fluidActive.insert(k); activate(x, y, z); }
   }
   for (auto& d : drops) {
     if (d.fill < W_MIN) { g_wlost[3] += d.fill; continue; }
