@@ -11,7 +11,7 @@
 
 constexpr int BS = 16, BS3 = BS * BS * BS;
 
-enum CellFlag : uint8_t { F_BURN = 1, F_LIT = 2, F_POWER = 4, F_ARMED = 8, F_SPARK = 16, F_WVEL = 32 };  // F_WVEL: water velocity in hp (x) and aux (z)
+enum CellFlag : uint8_t { F_BURN = 1, F_LIT = 2, F_POWER = 4, F_ARMED = 8, F_SPARK = 16 };
 
 struct Brick {
   uint8_t mat[BS3];
