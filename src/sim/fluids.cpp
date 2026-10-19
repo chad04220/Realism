@@ -142,7 +142,7 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
       return f;
     };
     float below = fillAt(x, y - 1, z);
-    if (below == 0 && fillAt(x, y - 2, z) == 0 && fillAt(x, y + 1, z) <= 0) {
+    if (below == 0 && rem >= 0.03f && fillAt(x, y - 2, z) == 0 && fillAt(x, y + 1, z) <= 0) {
       // Nothing under it: it falls freely as a droplet.
       drops.push_back({cellCenter(x, y, z), vec3(rng().range(-.05f, .05f), -0.8f, rng().range(-.05f, .05f)), rem, T});
       world.set(x, y, z, AIR);
@@ -178,7 +178,7 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
         float f = o.f * scale;
         if (f < 0.003f) continue;
         int nx_ = x + o.dx, nz_ = z + o.dz;
-        if (o.nf == 0 && fillAt(nx_, y - 1, nz_) == 0) {
+        if (o.nf == 0 && f >= 0.03f && fillAt(nx_, y - 1, nz_) == 0 && fillAt(nx_, y - 2, nz_) == 0) {
           // Over an edge or out of a hole: it leaves as a jet, pushed by the
           // water standing behind it (Torricelli).
           vec3 dir((float)o.dx, 0, (float)o.dz);
