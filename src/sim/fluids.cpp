@@ -91,12 +91,7 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
       above += colStack[i].second;
       headMemo[colStack[i].first] = above;
     }
-    if (colStack.empty()) return 0.f;
-    // Water squeezed in beyond its column's weight pushes back too.
-    float f = fillAt(x, y, z);
-    float h = std::max(headMemo[k0], f > 1 ? ((f - 1) / W_COMP + 1) * vs : 0.f);
-    headMemo[k0] = h;
-    return h;
+    return colStack.empty() ? 0.f : headMemo[k0];
   };
   struct Acc { float dm = 0, inM = 0, inMT = 0; vec3 inMV; vec3 selfV; bool self = false; };
   std::unordered_map<int64_t, Acc> acc;
