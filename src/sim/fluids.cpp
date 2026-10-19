@@ -148,14 +148,14 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
     // Down: the lower cell fills first (and takes a little extra under load).
     if (below >= 0) {
       float f = std::clamp(stableLower(rem + below) - below, 0.f, std::min(rem, W_FLOW));
-      move(x, y - 1, z, f, vel);
+      if (f > 1e-3f) move(x, y - 1, z, f, vel);
     }
     // Up, only when squeezed beyond what the cell above can balance.
     if (rem > 1) {
       float up = fillAt(x, y + 1, z);
       if (up >= 0) {
         float f = std::clamp(rem - stableLower(rem + up), 0.f, std::min(rem, W_FLOW));
-        move(x, y + 1, z, f, vel);
+        if (f > 1e-3f) move(x, y + 1, z, f, vel);
       }
     }
     // Sideways: the pressure difference accelerates the water, and the water
@@ -198,13 +198,13 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
       for (auto& o : outs) {
         // Advective flux plus a face-wise flux down the head difference (which
         // also stops the collocated velocities settling into a checkerboard).
-        o.f = o.nf < 0 ? 0 : o.f * tick / vs * avail + std::clamp((hs - o.h) / vs, 0.f, 1.f) * 0.24f;
+        o.f = o.nf < 0 ? 0 : o.f * tick / vs * avail + std::clamp((hs - o.h) / vs - 0.02f, 0.f, 1.f) * 0.24f;  // small dead band: level water rests
         sum += o.f;
       }
       float scale = sum > avail * 0.9f ? avail * 0.9f / sum : 1.f;
       for (auto& o : outs) {
         float f = o.f * scale;
-        if (f < 0.002f) continue;
+        if (f < 0.003f) continue;
         int nx_ = x + o.dx, nz_ = z + o.dz;
         if (o.nf == 0 && fillAt(nx_, y - 1, nz_) == 0) {
           // Over an edge or out of a hole: it leaves as a jet.
@@ -237,7 +237,7 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
     if (rem > 0 && rem < W_MIN && bestF > 0) move(best.x, best.y, best.z, rem, vel, true);
     self.selfV = vel;
     self.self = true;
-    if (f0 - rem > 1e-4f || length2(vel) > W_VQ * W_VQ) {
+    if (f0 - rem > 1e-3f || length2(vel) > W_VQ * W_VQ) {
       fluidActive.insert(k);  // still moving: stay awake
       static int dbgN = 0;
       if (getenv("REALISM_DEBUG_WATER") && x > 100 && (++dbgN % 20000) == 0)
@@ -291,7 +291,7 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
     uint8_t ob = (uint8_t)(std::min(1.f, old) * 255), nb = (uint8_t)(std::min(1.f, nf) * 255);
     br->fuel[l] = nf;
     if (ob != nb) world.markDirty(x, y, z);
-    if (std::fabs(a.dm) > 2e-4f || length2(nv) > W_VQ * W_VQ) { fluidActive.insert(key); activate(x, y, z); }
+    if (std::fabs(a.dm) > 1e-3f || length2(nv) > W_VQ * W_VQ) { fluidActive.insert(key); activate(x, y, z); }
   }
   if (getenv("REALISM_DEBUG_WATER")) {
     double bal = 0, dr = 0;
