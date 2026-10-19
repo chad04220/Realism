@@ -172,7 +172,14 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
     }
     // Don't leave a scrap too thin to keep: it goes with the main flow.
     if (rem > 0 && rem < W_MIN && bestF > 0) move(best.x, best.y, best.z, rem, true);
-    if (f0 - rem > 1e-3f) fluidActive.insert(k);  // still moving: stay awake
+    if (f0 - rem > 1e-3f) {
+      fluidActive.insert(k);  // still moving: stay awake
+      static int dbgN = 0;
+      if (getenv("REALISM_DEBUG_WATER") && x > 100 && (++dbgN % 30000) == 0) {
+        fprintf(stderr, "awake %d %d %d f0 %.3f moved %.3f hs %.3f below %.2f | E %.2f/%.3f W %.2f/%.3f N %.2f/%.3f S %.2f/%.3f\n", x, y, z, f0, f0 - rem, hs, below,
+                outs[0].nf, outs[0].h, outs[1].nf, outs[1].h, outs[2].nf, outs[2].h, outs[3].nf, outs[3].h);
+      }
+    }
   }
   // Apply.
   auto activate = [&](int x, int y, int z) {
