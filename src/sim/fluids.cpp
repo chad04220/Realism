@@ -214,7 +214,13 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
       continue;
     }
     storeFill(br, l, x, y, z, f0, rem);
-    if (f0 - rem > 1e-3f) { fluidActive.insert(k); activate(x, y, z); }
+    if (f0 - rem > 1e-3f) { fluidActive.insert(k); activate(x, y, z); g_wlost[9] += 1; }
+  }
+  if (getenv("REALISM_DEBUG_WATER")) {
+    static int pn = 0;
+    static double proc = 0, moved = 0;
+    proc += list.size(); moved += g_wlost[9]; g_wlost[9] = 0;
+    if (++pn % 135 == 0) { fprintf(stderr, "water passes: %.0f cells/pass, %.0f moving/pass, total active set %zu\n", proc / 135, moved / 135, fluidActive.size()); proc = moved = 0; }
   }
   if (getenv("REALISM_DEBUG_WATER")) {
     static int dn = 0;
