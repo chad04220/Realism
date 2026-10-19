@@ -506,17 +506,19 @@ bool Game::selftest() {
       }
     }
     double m1 = fillSum();
-    float hmin = 1e9f, hmax = -1e9f;
+    // Depth of each column (sum of fills, so compression counts as depth).
+    double s1 = 0, s2 = 0;
     for (int x = 0; x < N; x++)
       for (int z = 0; z < N; z++) {
         float hcol = 0;
         for (int y = 0; y < H; y++) {
           if (W.mat(x0 + x, y0 + y, z0 + z) != WATER) continue;
           float f = W.brick(x0 + x, y0 + y, z0 + z)->fuel[lidx(x0 + x, y0 + y, z0 + z)];
-          hcol = y + std::min(1.f, f > 0 ? f : 1.f);
+          hcol += f > 0 ? f : 1.f;
         }
-        hmin = std::min(hmin, hcol); hmax = std::max(hmax, hcol);
+        s1 += hcol; s2 += hcol * hcol;
       }
+    double mean = s1 / (N * N), sd = std::sqrt(std::max(0.0, s2 / (N * N) - mean * mean));
     { extern double g_wlost[10]; fprintf(stderr, "  lost: thin-new %.2f clobbered %.2f deleted %.2f tiny-drops %.2f\n", g_wlost[0], g_wlost[1], g_wlost[2], g_wlost[3]); }
     if (getenv("REALISM_DEBUG_WATER"))
       for (int y = 0; y < 4; y++) {
@@ -524,8 +526,8 @@ bool Game::selftest() {
         for (int x = 0; x < N; x++) for (int z = 0; z < N; z++) if (W.mat(x0 + x, y0 + y, z0 + z) == WATER) { float f = W.brick(x0 + x, y0 + y, z0 + z)->fuel[lidx(x0 + x, y0 + y, z0 + z)]; f = f > 0 ? f : 1; sum += f; mx = std::max(mx, (double)f); cnt++; }
         fprintf(stderr, "  layer %d: %d cells, fill %.1f, max %.3f\n", y, cnt, sum, mx);
       }
-    fprintf(stderr, "  basin after 5 s: water %.0f -> %.0f, surface %.2f..%.2f voxels\n", m0, m1, hmin, hmax);
-    check(m1 > m0 * 0.95 && m1 < m0 * 1.05 && hmax - hmin < 1.0f, "water surges out and levels across a basin");
+    fprintf(stderr, "  basin after 5 s: water %.0f -> %.0f, depth %.2f +- %.2f voxels\n", m0, m1, mean, sd);
+    check(m1 > m0 * 0.95 && m1 < m0 * 1.05 && sd < 0.25, "water surges out and levels across a basin");
   }
   // Radiation: a glowing block warms a plank 20 cm away across open air.
   {

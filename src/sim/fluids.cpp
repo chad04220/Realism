@@ -211,7 +211,18 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
           vec3 dir((float)o.dx, 0, (float)o.dz);
           vec3 v0 = vel;
           // Water in a hole is pushed by the tank behind it: use the highest head around.
-          float hj = std::max({hs, hEv, hWv, hNv, hSv});
+          auto column = [&](int cx, int cy, int cz) {
+            float hc = 0;
+            for (int k = 0; k < 400; k++) {
+              float f = fillAt(cx, cy + k, cz);
+              if (f <= 0) break;
+              hc += std::min(f, 1.f) * vs;
+              if (f < 0.98f) break;
+            }
+            return hc;
+          };
+          float hj = std::max({column(x, y, z), column(x - o.dx, y, z - o.dz), column(x, y, z + 1) * (hN > 0), column(x, y, z - 1) * (hS > 0),
+                               column(x + 1, y, z) * (hE > 0), column(x - 1, y, z) * (hW > 0)});
           if (hj > 1.5f * vs) v0 = dir * std::sqrt(2 * g * (hj - 0.5f * vs));  // Torricelli
           else v0 += dir * 0.3f;
           drops.push_back({cellCenter(x, y, z) + dir * (vs * 0.9f), v0 + vec3(rng().range(-.06f, .06f), rng().range(-.04f, .04f), rng().range(-.06f, .06f)), f, T});
