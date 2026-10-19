@@ -166,8 +166,12 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
         o.nf = fillAt(x + o.dx, y, z + o.dz);
         o.h = o.nf < 0 ? hs : o.nf == 0 ? 0.f : headAt(x + o.dx, y, z + o.dz);
         if (o.nf > 0) hj = std::max(hj, o.h);
+        // Two water columns trade only at the highest level where both hold
+        // water; otherwise every cell down the column would move the same
+        // surface difference and the pond would slosh forever.
+        bool handledAbove = o.nf > 0 && fillAt(x, y + 1, z) > 0 && fillAt(x + o.dx, y + 1, z + o.dz) > 0;
         // A small dead band lets level water come to rest.
-        o.f = o.nf < 0 ? 0 : std::clamp((hs - o.h) / vs - 0.02f, 0.f, 1.f) * 0.24f;
+        o.f = (o.nf < 0 || handledAbove) ? 0 : std::clamp((hs - o.h) / vs - 0.02f, 0.f, 1.f) * 0.24f;
         sum += o.f;
       }
       float avail = std::min(rem, 1.f);
