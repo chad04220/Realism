@@ -190,7 +190,7 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
       for (auto& o : outs) {
         // Advective flux plus a face-wise flux down the head difference (which
         // also stops the collocated velocities settling into a checkerboard).
-        o.f = o.nf < 0 ? 0 : o.f * tick / vs * avail + std::clamp((hs - o.h) / vs, 0.f, 1.f) * 0.18f;
+        o.f = o.nf < 0 ? 0 : o.f * tick / vs * avail + std::clamp((hs - o.h) / vs, 0.f, 1.f) * 0.24f;
         sum += o.f;
       }
       float scale = sum > avail * 0.9f ? avail * 0.9f / sum : 1.f;
@@ -331,7 +331,7 @@ void Sim::stepFluids(float tick) {
   }
   if (!water.empty()) {
     // Several sub-steps a tick, so water levels out at a believable pace.
-    const int SUB = 4;
+    const int SUB = 6;
     stepWater(water, tick / SUB);
     for (int s = 1; s < SUB; s++) {
       std::vector<int64_t> again;
