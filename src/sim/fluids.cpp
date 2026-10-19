@@ -25,8 +25,6 @@ void Sim::settleWater() {
   });
 }
 
-double g_wlost[10];
-
 void Sim::stepWater(std::vector<int64_t>& list, float tick) {
   const float g = 9.81f;
   // Fill of a cell: -1 blocked, 0 open air, otherwise the water's fill.
@@ -212,36 +210,19 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
         if (rem > 1e-5f && fillAt(x + d[0], y + d[1], z + d[2]) > 0) give(x + d[0], y + d[1], z + d[2], rem, true);
     }
     if (rem <= 1e-5f) {
-      if (rem > 0) g_wlost[2] += rem;
       world.set(x, y, z, AIR);
       activate(x, y, z);
       continue;
     }
     storeFill(br, l, x, y, z, f0, rem);
-    if (f0 - rem > 2e-4f) { fluidActive.insert(k); activate(x, y, z); g_wlost[9] += 1; }
-  }
-  if (getenv("REALISM_DEBUG_WATER")) {
-    static int pn = 0;
-    static double proc = 0, moved = 0;
-    proc += list.size(); moved += g_wlost[9]; g_wlost[9] = 0;
-    if (++pn % 135 == 0) { fprintf(stderr, "water passes: %.0f cells/pass, %.0f moving/pass, total active set %zu\n", proc / 135, moved / 135, fluidActive.size()); proc = moved = 0; }
-  }
-  if (getenv("REALISM_DEBUG_WATER")) {
-    static int dn = 0;
-    for (auto& d : drops)
-      if ((++dn % 4000) == 0) {
-        ivec3 c = cellOf(d.p);
-        fprintf(stderr, "drop at %d %d %d v %.2f %.2f %.2f fill %.3f | below %d %d above %d\n", c.x, c.y, c.z, d.v.x, d.v.y, d.v.z, d.fill,
-                world.mat(c.x, c.y - 1, c.z), world.mat(c.x, c.y - 2, c.z), world.mat(c.x, c.y + 1, c.z));
-      }
+    if (f0 - rem > 2e-4f) { fluidActive.insert(k); activate(x, y, z); }
   }
   for (auto& d : drops) {
-    if (d.fill < W_MIN) { g_wlost[3] += d.fill; continue; }
+    if (d.fill <= 0) continue;
     Cell c;
     c.mat = WATER; c.temp = d.temp;
     spawnDebris(d.p, d.v, c);
     if (!debris.empty()) { debris.back().fill = d.fill; debris.back().life = 8; }
-    g_wlost[8] += d.fill;
     ivec3 q = cellOf(d.p);
     activate(q.x, q.y, q.z);
   }
@@ -383,7 +364,6 @@ void Sim::stepDebris(float dt) {
         float f0 = wb->fuel[wl] > 0 ? wb->fuel[wl] : 1.f;
         wb->temp[wl] = (wb->temp[wl] * f0 + d.temp * d.fill) / (f0 + d.fill);
         wb->fuel[wl] = f0 + d.fill;
-        g_wlost[6] += d.fill;
         fluidActive.insert(packKey(c.x, c.y, c.z));
         if (rng().f() < 0.05f && length(d.v) > 2) emit(FX_SPRAY, np, vec3(0, 1.0f, 0) + rng().unitVec() * 0.4f, 0.4f, vs);
         d = debris.back(); debris.pop_back();
@@ -466,15 +446,14 @@ void Sim::stepDebris(float dt) {
           // A lone fragment is loose rubble: no longer part of its original part.
           if (cell.comp && comp(cell.comp).type != C_TERRAIN) cell.comp = 0;
           cell.hp = 200;
-          if (d.mat == WATER) { cell.fuel = d.fill; g_wlost[7] += d.fill; }
+          if (d.mat == WATER) cell.fuel = d.fill;
           putWorld(q.x, q.y, q.z, cell);
           if (isFluidish(d.mat)) fluidActive.insert(packKey(q.x, q.y, q.z));
           placed = true;
         }
       }
-      if (!placed && d.mat == WATER) g_wlost[4] += d.fill;
       kill = true;
-    } else if (kill && d.mat == WATER) g_wlost[5] += d.fill;
+    }
     if (kill) { d = debris.back(); debris.pop_back(); continue; }
     i++;
   }

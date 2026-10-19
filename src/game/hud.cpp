@@ -462,7 +462,6 @@ bool Game::selftest() {
       for (auto& d : sim.debris) if (d.mat == WATER) m += d.fill;
       return m;
     };
-    if (getenv("REALISM_DEBUG_WATER")) fprintf(stderr, "wall check %d %d %d\n", W.mat(x0 + N, y0, z0 + 1), W.mat(x0 + N, y0 + 1, z0 + 1), W.mat(x0 + N, y0 - 1, z0 + 1));
     // Punch a hole 4 cells up the tank wall: the head above it is ~16 cells.
     sim.putWorld(x0 + 6, y0 + 4, z0 + 3, Cell{});
     float vmax = 0;
@@ -476,44 +475,10 @@ bool Game::selftest() {
     check(vmax > expect * 0.6f && vmax < expect * 1.4f, "water jets from a hole at Torricelli speed");
     // Take the tank away: the water should surge out and level across the basin.
     for (int x = 0; x <= 6; x++) for (int z = 0; z <= 6; z++) if (x == 6 || z == 6) for (int y = 0; y < H; y++) sim.putWorld(x0 + x, y0 + y, z0 + z, Cell{});
-    if (getenv("REALISM_DEBUG_WATER")) fprintf(stderr, "wall check2 %d %d %d\n", W.mat(x0 + N, y0, z0 + 1), W.mat(x0 + N, y0 + 1, z0 + 1), W.mat(x0 + N, y0 - 1, z0 + 1));
     double m0 = fillSum();
-    { extern double g_wlost[10]; for (double& d : g_wlost) d = 0; }
-    for (int i = 0; i < (getenv("REALISM_DEBUG_WATER") ? 900 : 480); i++) {
-      sim.step(1.f / 60.f);
-      if (getenv("REALISM_DEBUG_WATER") && i % 60 == 59) {
-        float a = 1e9f, b = -1e9f; double sd = 0; int n = 0;
-        for (int x = 0; x < N; x++) for (int z = 0; z < N; z++) {
-          float hcol = 0;
-          for (int y = 0; y < H; y++) if (W.mat(x0 + x, y0 + y, z0 + z) == WATER) { float f = W.brick(x0 + x, y0 + y, z0 + z)->fuel[lidx(x0 + x, y0 + y, z0 + z)]; hcol = y + std::min(1.f, f > 0 ? f : 1.f); }
-          a = std::min(a, hcol); b = std::max(b, hcol); sd += hcol; n++;
-        }
-        double q1 = 0, q2 = 0;
-        for (int x = 0; x < N; x++) for (int z = 0; z < N; z++) {
-          float hc = 0;
-          for (int y = 0; y < H; y++) if (W.mat(x0 + x, y0 + y, z0 + z) == WATER) { float f = W.brick(x0 + x, y0 + y, z0 + z)->fuel[lidx(x0 + x, y0 + y, z0 + z)]; hc += f > 0 ? f : 1; }
-          q1 += hc; q2 += hc * hc;
-        }
-        q1 /= N * N;
-        fprintf(stderr, "t=%.0fs surface %.2f..%.2f depth sd %.2f fluid %.1fms active %zu\n", (i + 1) / 60.f, a, b, std::sqrt(std::max(0.0, q2 / (N * N) - q1 * q1)), sim.stats.fluidMs, sim.fluidActive.size());
-      }
-      if (getenv("REALISM_DEBUG_WATER") && i % 20 == 0) { extern double g_wlost[10]; int nd = 0; for (auto& d : sim.debris) if (d.mat == WATER) nd++;
-        double wt = 0; int outside = 0; W.forEach([&](int x, int y, int z, Brick* br, int l) { if (br->mat[l] == WATER) { float f = br->fuel[l] > 0 ? br->fuel[l] : 1.f; wt += f; if (x >= x0 - 2 && x <= x0 + N + 2 && z >= z0 - 2 && z <= z0 + N + 2 && (x < x0 || x >= x0 + N || z < z0 || z >= z0 + N || y < y0 || y >= y0 + H + 2)) { if (outside++ < 5) fprintf(stderr, "  out %d %d %d\n", x - x0, y - y0, z - z0); } } });
-        fprintf(stderr, "world water %.1f, near-box-outside cells %d\n", wt, outside); fprintf(stderr, "i=%d mass %.1f drops %d lost %.2f %.2f %.2f %.2f unplaced %.2f killed %.2f merged %.2f deposited %.2f created %.2f\n", i, fillSum(), nd, g_wlost[0], g_wlost[1], g_wlost[2], g_wlost[3], g_wlost[4], g_wlost[5], g_wlost[6], g_wlost[7], g_wlost[8]); }
-      if (getenv("REALISM_DEBUG_WATER") && i == 899) {
-        for (int z = 0; z < N; z += 1) {
-          for (int x = 0; x < N; x++) {
-            float hcol = 0;
-            for (int y = 0; y < H; y++) if (W.mat(x0 + x, y0 + y, z0 + z) == WATER) { float f = W.brick(x0 + x, y0 + y, z0 + z)->fuel[lidx(x0 + x, y0 + y, z0 + z)]; hcol += f > 0 ? f : 1; }
-            fprintf(stderr, "%4.1f", hcol);
-          }
-          fprintf(stderr, "\n");
-        }
-        fprintf(stderr, "--\n");
-      }
-    }
+    for (int i = 0; i < 480; i++) sim.step(1.f / 60.f);
     double m1 = fillSum();
-    // Depth of each column (sum of fills, so compression counts as depth).
+    // Depth of each column.
     double s1 = 0, s2 = 0;
     for (int x = 0; x < N; x++)
       for (int z = 0; z < N; z++) {
@@ -526,13 +491,6 @@ bool Game::selftest() {
         s1 += hcol; s2 += hcol * hcol;
       }
     double mean = s1 / (N * N), sd = std::sqrt(std::max(0.0, s2 / (N * N) - mean * mean));
-    { extern double g_wlost[10]; fprintf(stderr, "  lost: thin-new %.2f clobbered %.2f deleted %.2f tiny-drops %.2f\n", g_wlost[0], g_wlost[1], g_wlost[2], g_wlost[3]); }
-    if (getenv("REALISM_DEBUG_WATER"))
-      for (int y = 0; y < 4; y++) {
-        double sum = 0, mx = 0; int cnt = 0;
-        for (int x = 0; x < N; x++) for (int z = 0; z < N; z++) if (W.mat(x0 + x, y0 + y, z0 + z) == WATER) { float f = W.brick(x0 + x, y0 + y, z0 + z)->fuel[lidx(x0 + x, y0 + y, z0 + z)]; f = f > 0 ? f : 1; sum += f; mx = std::max(mx, (double)f); cnt++; }
-        fprintf(stderr, "  layer %d: %d cells, fill %.1f, max %.3f\n", y, cnt, sum, mx);
-      }
     fprintf(stderr, "  basin after 8 s: water %.0f -> %.0f, depth %.2f +- %.2f voxels\n", m0, m1, mean, sd);
     check(m1 > m0 * 0.98 && m1 < m0 * 1.02 && sd < 0.2, "water surges out and levels across a basin");
   }

@@ -617,7 +617,8 @@ void AirSim::step(float dt, const Volume& world) {
   lap(4);
   if (++profN == 60) {
     if (getenv("REALISM_DEBUG_AIR")) fprintf(stderr, "air prof: pre %.2f adv %.2f vort %.2f proj %.2f scal %.2f\n", prof[0] / 60, prof[1] / 60, prof[2] / 60, prof[3] / 60, prof[4] / 60);
-    for (double& d : prof) d = 0; profN = 0;
+    for (double& d : prof) d = 0;
+    profN = 0;
   }
   for (int a : act) active += a;
   activeCells = active;
