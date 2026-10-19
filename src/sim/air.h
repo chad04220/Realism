@@ -38,7 +38,7 @@ class AirSim {
   std::vector<float> T, smk, stm; // cell-centred temperature (C), smoke, steam
   std::vector<uint8_t> solid;     // 1 = blocked by matter
   bool texDirty = true;
-  vec3 wind{1.6f, 0, 0.5f};       // breeze at the open boundaries, m/s
+  vec3 wind{0.9f, 0, 0.35f};      // breeze at the open boundaries, m/s
   float gust = 0;
   float stepMs = 0;
   int activeCells = 0;

@@ -423,7 +423,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
         float fs = MATS[br->mat[l]].flameTemp / 850.f;
         s.emit(FX_FIRE, wp + rng().unitVec() * vs * 0.4f, vec3(rng().range(-.1f, .1f), rng().range(0.3f, 0.9f), rng().range(-.1f, .1f)),
                rng().range(0.35f, 0.8f), vs * rng().range(2.2f, 4.f) * fs);
-        if (rng().f() < 0.12f) {
+        if (rng().f() < 0.03f) {  // volumetric smoke from the air carries most of it
           vec3 smokeCol = br->mat[l] == RUBBER || br->mat[l] == PLASTIC ? vec3(0.06f) : vec3(0.32f);
           s.emit(FX_SMOKE, wp + vec3(0, vs * 3, 0), vec3(0, rng().range(0.3f, 0.6f), 0), rng().range(2.5f, 5.f), vs * 5, smokeCol);
         }

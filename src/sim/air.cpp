@@ -478,7 +478,7 @@ void AirSim::step(float dt, const Volume& world) {
   for (size_t c = 0; c < heatAcc.size(); c++) {
     if (heatAcc[c] != 0) { T[c] = std::min(1400.f, std::max(-40.f, T[c] + heatAcc[c] / Cair)); heatAcc[c] = 0; }
   }
-  // Buoyancy on vertical faces (Boussinesq), smoke adds a little weight.
+  // Buoyancy on vertical faces (Boussinesq).
   Jobs::get().parallelFor(ny - 1, 1, [&](int y0, int y1, int) {
     for (int yy = y0; yy < y1; yy++) {
       int y = yy + 1;
@@ -486,8 +486,7 @@ void AirSim::step(float dt, const Volume& world) {
         for (int x = 0; x < nx; x++) {
           int a = cid(x, y - 1, z), b = cid(x, y, z);
           float Tm = 0.5f * (T[a] + T[b]);
-          float sm = 0.5f * (smk[a] + smk[b]);
-          v[vi(x, y, z)] += dt * (9.81f * (Tm - AMBIENT) / (AMBIENT + 273.15f) - 0.08f * sm);
+          v[vi(x, y, z)] += dt * 9.81f * (Tm - AMBIENT) / (AMBIENT + 273.15f);
         }
     }
   });

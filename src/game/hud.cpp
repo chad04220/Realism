@@ -323,6 +323,8 @@ void Game::drawMenu() {
     if (toggle("Sun shadows", bx, yy, bw, ropt.shadows)) settings.shadows = ropt.shadows;
     yy += 40 * s;
     if (toggle("Bloom", bx, yy, bw, ropt.bloom)) settings.bloom = ropt.bloom;
+    yy += 40 * s;
+    if (toggle("Volumetric smoke & heat haze", bx, yy, bw, ropt.volumetrics)) settings.volumetrics = ropt.volumetrics;
     yy += 46 * s;
     if (slider("Render scale", bx, yy, bw, ropt.renderScale, 0.4f, 1.5f, "%.2f\xC3\x97")) settings.renderScale = ropt.renderScale;
     yy += 54 * s;

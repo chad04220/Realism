@@ -93,6 +93,9 @@ typedef ptrdiff_t GLintptr;
 #define GL_RGBA8UI 0x8D7C
 #define GL_RGBA8 0x8058
 #define GL_RGBA16F 0x881A
+#ifndef GL_COLOR_ATTACHMENT1
+#define GL_COLOR_ATTACHMENT1 0x8CE1
+#endif
 #define GL_RGB16F 0x881B
 #define GL_R11F_G11F_B10F 0x8C3A
 #define GL_SRGB8_ALPHA8 0x8C43

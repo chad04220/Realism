@@ -105,6 +105,7 @@ bool Game::init(const Args& args) {
   ropt.smooth = settings.smooth;
   ropt.shadows = settings.shadows;
   ropt.bloom = settings.bloom;
+  ropt.volumetrics = settings.volumetrics;
   ropt.renderScale = settings.renderScale;
   ropt.exposure = settings.exposure;
   cam.fov = settings.fov * PI / 180.f;

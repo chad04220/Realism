@@ -21,6 +21,7 @@ struct RenderOptions {
   float renderScale = 1.0f;
   float exposure = 1.0f;
   bool thermal = false;
+  bool volumetrics = true;
 };
 
 struct HoverInfo {
@@ -63,7 +64,13 @@ class Renderer {
   void bloom();
 
   Sim* sim_ = nullptr;
-  Shader worldShader_, bodyShader_, debrisShader_, fxShader_, brightShader_, blurShader_, compositeShader_;
+  Shader worldShader_, bodyShader_, debrisShader_, fxShader_, brightShader_, blurShader_, compositeShader_, volumeShader_;
+  GLuint airTex_ = 0;
+  std::vector<uint8_t> airCpu_;
+  GLuint volFbo_ = 0, volTex_ = 0, hazeTex_ = 0;
+  int vw_ = 0, vh_ = 0;
+  void uploadAir();
+  void drawVolumes(const Camera& cam, float time);
   GLuint worldData_ = 0, worldDens_ = 0, worldBricks_ = 0, dynOcc_ = 0;
   std::vector<uint8_t> brickOcc_;
   bool brickOccDirty_ = true;

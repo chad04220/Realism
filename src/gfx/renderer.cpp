@@ -72,6 +72,7 @@ bool Renderer::init(Sim* sim) {
   ok &= brightShader_.build("bright", shaders::kFullscreenVS, common + shaders::kBrightFS);
   ok &= blurShader_.build("blur", shaders::kFullscreenVS, common + shaders::kBlurFS);
   ok &= compositeShader_.build("composite", shaders::kFullscreenVS, common + shaders::kCompositeFS);
+  ok &= volumeShader_.build("volume", shaders::kFullscreenVS, common + shaders::kVolumeFS);
   if (!ok) return false;
 
   const Volume& w = sim_->world;
@@ -174,6 +175,19 @@ void Renderer::ensureTargets(int w, int h) {
   glGenFramebuffers(1, &depthCopyFbo_);
   glBindFramebuffer(GL_FRAMEBUFFER, depthCopyFbo_);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthCopyTex_, 0);
+  // Half-resolution targets for smoke, steam and heat haze.
+  if (volFbo_) { glDeleteFramebuffers(1, &volFbo_); glDeleteTextures(1, &volTex_); glDeleteTextures(1, &hazeTex_); }
+  vw_ = std::max(16, w / 2); vh_ = std::max(16, h / 2);
+  volTex_ = makeTex2D(GL_RGBA16F, vw_, vh_, GL_RGBA, GL_FLOAT, true);
+  hazeTex_ = makeTex2D(GL_R16F, vw_, vh_, GL_RED, GL_FLOAT, true);
+  glGenFramebuffers(1, &volFbo_);
+  glBindFramebuffer(GL_FRAMEBUFFER, volFbo_);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, volTex_, 0);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, hazeTex_, 0);
+  {
+    const GLenum bufs[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+    glDrawBuffers(2, bufs);
+  }
   int bw = w / 2, bh = h / 2;
   for (int i = 0; i < 6 && bw >= 4 && bh >= 4; i++) {
     Level l;
@@ -477,6 +491,45 @@ void Renderer::drawFx(const Camera& cam, float time) {
   glDisable(GL_BLEND);
 }
 
+void Renderer::uploadAir() {
+  const AirSim& a = sim_->air;
+  if (!sim_->airReady || a.T.empty()) return;
+  if (!airTex_) airTex_ = makeTex3D(GL_RGBA8, a.nx, a.ny, a.nz, GL_RGBA, GL_UNSIGNED_BYTE, true);
+  if (!a.texDirty) return;
+  // The air grid is stored x, z, y; the texture wants x, y, z.
+  airCpu_.resize((size_t)a.nx * a.ny * a.nz * 4);
+  for (int z = 0; z < a.nz; z++)
+    for (int y = 0; y < a.ny; y++)
+      for (int x = 0; x < a.nx; x++) {
+        int c = a.cid(x, y, z);
+        uint8_t* o = &airCpu_[((size_t)x + (size_t)a.nx * (y + (size_t)a.ny * z)) * 4];
+        o[0] = (uint8_t)(std::clamp(a.smk[c] * 0.5f, 0.f, 1.f) * 255);
+        o[1] = (uint8_t)(std::clamp(a.stm[c] * 0.5f, 0.f, 1.f) * 255);
+        o[2] = (uint8_t)(std::clamp((a.T[c] - AMBIENT) / 800.f, 0.f, 1.f) * 255);
+        o[3] = 255;
+      }
+  glBindTexture(GL_TEXTURE_3D, airTex_);
+  glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, a.nx, a.ny, a.nz, GL_RGBA, GL_UNSIGNED_BYTE, airCpu_.data());
+  sim_->air.texDirty = false;
+}
+
+void Renderer::drawVolumes(const Camera& cam, float time) {
+  if (!airTex_) return;
+  glBindFramebuffer(GL_FRAMEBUFFER, volFbo_);
+  glViewport(0, 0, vw_, vh_);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_BLEND);
+  volumeShader_.use();
+  setCommon(volumeShader_, cam, time);
+  glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_3D, airTex_); volumeShader_.set("uAir", 0);
+  glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, depthCopyTex_); volumeShader_.set("uDepth", 1);
+  const AirSim& a = sim_->air;
+  volumeShader_.set("uAirSize", vec3(a.nx * a.h, a.ny * a.h, a.nz * a.h));
+  glBindVertexArray(vaoEmpty_);
+  glDrawArrays(GL_TRIANGLES, 0, 3);
+  glActiveTexture(GL_TEXTURE0);
+}
+
 void Renderer::bloom() {
   if (bloomLevels_.empty()) return;
   glDisable(GL_DEPTH_TEST);
@@ -650,6 +703,10 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
   glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
   drawFx(cam, time);
 
+  // ---- smoke, steam and heat haze
+  bool vol = opt.volumetrics && sim_->airReady;
+  if (vol) { uploadAir(); drawVolumes(cam, time); }
+
   // ---- bloom + composite
   if (opt.bloom) bloom();
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -665,6 +722,9 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
   compositeShader_.set("uExposure", opt.exposure);
   compositeShader_.set("uTexel", vec2(1.f / rw, 1.f / rh));
   compositeShader_.set("uFlash", flash);
+  compositeShader_.set("uVolOn", vol && airTex_ ? 1.f : 0.f);
+  glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_2D, volTex_); compositeShader_.set("uVol", 2);
+  glActiveTexture(GL_TEXTURE0 + 3); glBindTexture(GL_TEXTURE_2D, hazeTex_); compositeShader_.set("uHaze", 3);
   glBindVertexArray(vaoEmpty_);
   glDrawArrays(GL_TRIANGLES, 0, 3);
   glEndQuery(GL_TIME_ELAPSED);

@@ -710,6 +710,67 @@ void main() {
 }
 )GLSL";
 
+
+// Smoke, steam and hot air from the air simulation, ray-marched through its
+// 3D texture at half resolution and clipped to the scene depth. Writes the
+// in-scattered light (premultiplied, alpha = opacity) and, for heat haze,
+// how much hot air the view ray crossed.
+inline const char* kVolumeFS = R"GLSL(
+in vec2 vUV;
+uniform sampler3D uAir;     // r smoke/2, g steam/2, b (T - ambient)/800
+uniform sampler2D uDepth;
+uniform vec3 uAirSize;      // metres
+layout(location = 0) out vec4 oVol;
+layout(location = 1) out vec4 oHaze;
+vec4 air(vec3 p) { return texture(uAir, p / uAirSize); }
+void main() {
+  vec2 ndc = vUV * 2.0 - 1.0;
+  vec4 pf = uInvViewProj * vec4(ndc, 1.0, 1.0);
+  vec3 ro = uCamPos, rd = normalize(pf.xyz / pf.w - ro);
+  float d = texture(uDepth, vUV).r;
+  float tScene = 1e5;
+  if (d < 1.0) { vec4 ps = uInvViewProj * vec4(ndc, d * 2.0 - 1.0, 1.0); tScene = length(ps.xyz / ps.w - ro); }
+  vec3 inv = 1.0 / rd;
+  vec3 a = (vec3(0.0) - ro) * inv, b = (uAirSize - ro) * inv;
+  vec3 mn = min(a, b), mx = max(a, b);
+  float t0 = max(max(mn.x, mn.y), max(mn.z, 0.0)), t1 = min(min(mx.x, mx.y), min(mx.z, tScene));
+  oVol = vec4(0.0); oHaze = vec4(0.0);
+  if (t1 <= t0) return;
+  const int STEPS = 32;
+  float dt = (t1 - t0) / float(STEPS);
+  float jit = hash13(vec3(gl_FragCoord.xy, fract(uTime * 7.31) * 97.0));
+  vec3 trans = vec3(1.0), col = vec3(0.0);
+  float heat = 0.0;
+  vec3 amb = mix(uSkyHorizon, uSkyZenith, 0.6) * 0.55;
+  float cosS = dot(rd, uSunDir);
+  float phase = 0.55 + 0.9 * pow(max(cosS, 0.0), 6.0);  // forward scattering towards the sun
+  for (int i = 0; i < STEPS; i++) {
+    vec3 p = ro + rd * (t0 + (float(i) + jit) * dt);
+    vec4 s = air(p);
+    float smoke = s.r * 2.0, steam = s.g * 2.0, dT = s.b * 800.0;
+    heat += dT * dt;
+    // Wisps: break the 20 cm cells up with drifting noise.
+    float wisp = 0.55 + 0.9 * noise3(p * 3.1 + vec3(0.0, -uTime * 0.6, uTime * 0.2));
+    float sigS = smoke * 3.5 * wisp, sigW = steam * 3.0 * wisp;
+    float sig = sigS + sigW;
+    if (sig < 1e-3) continue;
+    // Self-shadowing towards the sun (two taps).
+    float occ = air(p + uSunDir * 0.35).r + air(p + uSunDir * 1.1).g * 0.5 + air(p + uSunDir * 1.1).r;
+    float sunT = exp(-occ * 2.0 * 3.0);
+    vec3 alb = (sigS * vec3(0.42, 0.41, 0.40) + sigW * vec3(0.95)) / sig;
+    vec3 L = alb * (uSunColor * sunT * phase * 0.45 + amb);
+    // Smoke right over a fire is lit from below by the flames.
+    L += vec3(2.2, 0.75, 0.22) * smoothstep(120.0, 600.0, dT) * (sigS / sig) * 0.9;
+    vec3 ext = vec3(1.0 - exp(-sig * dt));
+    col += trans * ext * L;
+    trans *= 1.0 - ext;
+    if (trans.g < 0.01) break;
+  }
+  oVol = vec4(col, 1.0 - trans.g);
+  oHaze = vec4(heat, 0.0, 0.0, 1.0);
+}
+)GLSL";
+
 // Bloom and final composite.
 inline const char* kBrightFS = R"GLSL(
 in vec2 vUV;
@@ -755,6 +816,9 @@ inline const char* kCompositeFS = R"GLSL(
 in vec2 vUV;
 uniform sampler2D uScene;
 uniform sampler2D uBloom;
+uniform sampler2D uVol;
+uniform sampler2D uHaze;
+uniform float uVolOn;
 uniform float uExposure;
 uniform float uBloomStrength;
 uniform vec2 uTexel;
@@ -763,17 +827,31 @@ layout(location = 0) out vec4 oColor;
 vec3 aces(vec3 x) { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 void main() {
+  // Heat haze: the image shimmers where the view ray crossed hot air.
+  vec2 uv = vUV;
+  if (uVolOn > 0.5) {
+    float h = texture(uHaze, vUV).r;
+    float k = clamp(h / 250.0, 0.0, 1.0) * 0.006;
+    if (k > 1e-5) {
+      vec3 q = vec3(vUV * vec2(38.0, 22.0), uTime * 2.3);
+      uv += (vec2(noise3(q), noise3(q + 17.3)) - 0.5) * k + vec2(0.0, -k * 0.25);
+    }
+  }
   // Light FXAA-style edge smoothing on the HDR image.
-  vec3 c = texture(uScene, vUV).rgb;
-  float lN = luma(texture(uScene, vUV + vec2(0, uTexel.y)).rgb), lS = luma(texture(uScene, vUV - vec2(0, uTexel.y)).rgb);
-  float lE = luma(texture(uScene, vUV + vec2(uTexel.x, 0)).rgb), lW = luma(texture(uScene, vUV - vec2(uTexel.x, 0)).rgb);
+  vec3 c = texture(uScene, uv).rgb;
+  float lN = luma(texture(uScene, uv + vec2(0, uTexel.y)).rgb), lS = luma(texture(uScene, uv - vec2(0, uTexel.y)).rgb);
+  float lE = luma(texture(uScene, uv + vec2(uTexel.x, 0)).rgb), lW = luma(texture(uScene, uv - vec2(uTexel.x, 0)).rgb);
   float lC = luma(c);
   float range = max(max(lN, lS), max(max(lE, lW), lC)) - min(min(lN, lS), min(min(lE, lW), lC));
   if (range > 0.08 * max(lC, 0.1)) {
     vec2 dir = normalize(vec2(-(lN - lS), lE - lW) + 1e-5) * uTexel;
-    c = (c * 2.0 + texture(uScene, vUV + dir * 0.75).rgb + texture(uScene, vUV - dir * 0.75).rgb) * 0.25;
+    c = (c * 2.0 + texture(uScene, uv + dir * 0.75).rgb + texture(uScene, uv - dir * 0.75).rgb) * 0.25;
   }
   c += texture(uBloom, vUV).rgb * uBloomStrength;
+  if (uVolOn > 0.5) {
+    vec4 v = texture(uVol, vUV);
+    c = c * (1.0 - v.a) + v.rgb;
+  }
   c *= uExposure * (1.0 + uFlash);
   c = aces(c);
   // Gentle warm grade and vignette.

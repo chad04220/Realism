@@ -37,6 +37,7 @@ void Settings::load(const std::string& path) {
     else if (k == "smooth_surfaces") smooth = bv;
     else if (k == "shadows") shadows = bv;
     else if (k == "bloom") bloom = bv;
+    else if (k == "volumetrics") volumetrics = bv;
     else if (k == "fov") fov = fv;
     else if (k == "exposure") exposure = fv;
     else if (k == "ui_scale") uiScale = fv;
@@ -63,7 +64,7 @@ void Settings::save(const std::string& path) const {
   f << "width = " << width << "\nheight = " << height << "\n";
   f << "fullscreen = " << (fullscreen ? 1 : 0) << "\nvsync = " << (vsync ? 1 : 0) << "\n";
   f << "render_scale = " << renderScale << "     # 1.0 = native; lower for speed\n";
-  f << "smooth_surfaces = " << (smooth ? 1 : 0) << "\nshadows = " << (shadows ? 1 : 0) << "\nbloom = " << (bloom ? 1 : 0) << "\n";
+  f << "smooth_surfaces = " << (smooth ? 1 : 0) << "\nshadows = " << (shadows ? 1 : 0) << "\nbloom = " << (bloom ? 1 : 0) << "\nvolumetrics = " << (volumetrics ? 1 : 0) << "\n";
   f << "fov = " << fov << "\nexposure = " << exposure << "\nui_scale = " << uiScale << "\n";
   f << "# Controls and sound\n";
   f << "mouse_sensitivity = " << sensitivity << "\ninvert_y = " << (invertY ? 1 : 0) << "\nvolume = " << volume << "\n";
