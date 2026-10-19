@@ -87,16 +87,15 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
     return air.cid(cx, cy, cz);
   };
   auto activate = [&](int x, int y, int z) {
-    for (int dy = -1; dy <= 1; dy++)
-      for (auto& d : DIRS6) {
-        int xx = x + d[0], yy = y + d[1] + dy, zz = z + d[2];
-        uint8_t m = world.mat(xx, yy, zz);
-        if (m && isFluidish(m)) fluidActive.insert(packKey(xx, yy, zz));
-      }
+    for (auto& d : DIRS6) {
+      int xx = x + d[0], yy = y + d[1], zz = z + d[2];
+      uint8_t m = world.mat(xx, yy, zz);
+      if (m && isFluidish(m)) fluidActive.insert(packKey(xx, yy, zz));
+    }
   };
   // Store a fill, telling the renderer when the visible level changes.
   auto storeFill = [&](Brick* b, int l, int x, int y, int z, float oldF, float f) {
-    b->fuel[l] = f >= 0.9999f ? 0.f : f;
+    b->fuel[l] = std::fabs(f - 1) < 1e-4f ? 0.f : f;  // 0 means exactly full
     if ((int)(std::min(1.f, oldF) * 255) != (int)(std::min(1.f, f) * 255)) world.markDirty(x, y, z);
   };
   struct Drop { vec3 p, v; float fill, temp; };
@@ -254,7 +253,7 @@ void Sim::stepFluids(float tick) {
   }
   if (!water.empty()) {
     // Several sub-steps a tick, so water levels out at a believable pace.
-    const int SUB = 6;
+    const int SUB = 3;
     stepWater(water, tick / SUB);
     for (int s = 1; s < SUB; s++) {
       std::vector<int64_t> again;
