@@ -518,6 +518,12 @@ bool Game::selftest() {
         hmin = std::min(hmin, hcol); hmax = std::max(hmax, hcol);
       }
     { extern double g_wlost[10]; fprintf(stderr, "  lost: thin-new %.2f clobbered %.2f deleted %.2f tiny-drops %.2f\n", g_wlost[0], g_wlost[1], g_wlost[2], g_wlost[3]); }
+    if (getenv("REALISM_DEBUG_WATER"))
+      for (int y = 0; y < 4; y++) {
+        double sum = 0, mx = 0; int cnt = 0;
+        for (int x = 0; x < N; x++) for (int z = 0; z < N; z++) if (W.mat(x0 + x, y0 + y, z0 + z) == WATER) { float f = W.brick(x0 + x, y0 + y, z0 + z)->fuel[lidx(x0 + x, y0 + y, z0 + z)]; f = f > 0 ? f : 1; sum += f; mx = std::max(mx, (double)f); cnt++; }
+        fprintf(stderr, "  layer %d: %d cells, fill %.1f, max %.3f\n", y, cnt, sum, mx);
+      }
     fprintf(stderr, "  basin after 5 s: water %.0f -> %.0f, surface %.2f..%.2f voxels\n", m0, m1, hmin, hmax);
     check(m1 > m0 * 0.95 && m1 < m0 * 1.05 && hmax - hmin < 1.0f, "water surges out and levels across a basin");
   }
