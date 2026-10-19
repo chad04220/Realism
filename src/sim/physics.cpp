@@ -87,7 +87,9 @@ void Sim::stepPhysics(float dtFrame) {
         b.vel += fb * b.invMass * h;
         b.angVel += b.invIworld * cross(wetCentre - b.pos, fb) * h;
         float drag = 1.f - std::min(0.9f, 2.5f * b.submerged * h);
-        b.vel *= drag;
+        // Drag is relative to the water, so a current carries floating things along.
+        vec3 cur = waterCurrent(wetCentre);
+        b.vel = cur + (b.vel - cur) * drag;
         b.angVel *= drag;
       }
       b.vel *= (1.f - 0.01f * h);

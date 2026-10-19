@@ -209,7 +209,8 @@ void Renderer::uploadWorldBrick(int b) {
           int o = x + 16 * (y + 16 * z);
           uint8_t m = br->mat[l];
           scratchData_[o * 4 + 0] = m;
-          scratchData_[o * 4 + 1] = m ? glowByte(br->temp[l], br->flags[l]) : 0;
+          scratchData_[o * 4 + 1] = m == WATER ? (uint8_t)(std::min(1.f, br->fuel[l] > 0 ? br->fuel[l] : 1.f) * 255.f)
+                                               : m ? glowByte(br->temp[l], br->flags[l]) : 0;
           scratchData_[o * 4 + 2] = br->hp[l];
           scratchData_[o * 4 + 3] = partHash(br->comp[l]);
           scratchDens_[o] = densOf(m);

@@ -236,6 +236,16 @@ bool march(vec3 ro, vec3 rd, float tLimit, out Hit h, inout vec3 trans, inout ve
 #endif
     uvec4 d = vox(v);
     uint m = d.r;
+#ifdef WORLD
+    if (m == MAT_WATER && d.g < 250u && vox(v + ivec3(0, 1, 0)).r != MAT_WATER) {
+      // A partly filled water cell: only the part under its surface is water.
+      float ys = float(v.y) + max(float(d.g) / 255.0, 0.04);
+      float tx = min(side.x, min(side.y, side.z));
+      float yin = ro.y + rd.y * t, yout = ro.y + rd.y * tx;
+      if (yin > ys && yout > ys) m = 0u;
+      else if (yin > ys && !inTrans) { t += (ys - yin) / rd.y; face = vec3(0, 1, 0); }
+    }
+#endif
     if (m != 0u) {
       if (isTrans(m)) {
         if (!inTrans || m != transMat) {

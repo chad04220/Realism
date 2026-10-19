@@ -88,6 +88,7 @@ bool Game::init(const Args& args) {
   }
   double t0 = plat::now();
   scene = buildScene(sim);
+  sim.settleWater();
   sim.initAir();
   // Let everything settle onto its supports, then put it to sleep.
   for (int i = 0; i < 90; i++) sim.step(1.f / 60.f);
@@ -1030,6 +1031,7 @@ void Game::resetWorld() {
   sim.init(sim.cfg);
   initParts(sim.vs);
   scene = buildScene(sim);
+  sim.settleWater();
   sim.initAir();
   for (int i = 0; i < 90; i++) sim.step(1.f / 60.f);
   for (auto& b : sim.bodies) { b->vel = vec3(0); b->angVel = vec3(0); b->asleep = true; }

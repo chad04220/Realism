@@ -18,6 +18,7 @@ struct Debris {          // a single loose voxel in flight
   uint32_t comp;
   uint8_t bounces;
   uint8_t aux = 0;       // molten: what it was
+  float fill = 1;        // water: how much of a cell it carries
 };
 
 enum FxKind : uint8_t { FX_FIRE, FX_SMOKE, FX_SPARK, FX_STEAM, FX_DUST, FX_FLASH, FX_SPRAY, FX_EMBER };
@@ -139,7 +140,12 @@ class Sim {
   void stepPhysics(float dt);
   void stepThermal(float dtThermal);
   void radiate(float dtThermal);
-  void stepFluids();
+  void stepFluids(float tick);
+  void stepWater(std::vector<int64_t>& list, float tick);
+  void settleWater();
+  vec3 waterCurrent(const vec3& p) const;   // mean water flow here, m/s
+  std::vector<vec3> waterFlow;              // per air cell
+  std::vector<float> waterFlowN;
   void stepElectric(float dt);
   void stepDevices(float dt);
   void stepDebris(float dt);

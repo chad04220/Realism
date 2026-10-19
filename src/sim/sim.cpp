@@ -95,7 +95,7 @@ void Sim::step(float dtReal) {
   fluidAcc_ += dt;
   if (fluidAcc_ >= 1.f / 45.f) {
     auto a = clk::now();
-    stepFluids();
+    stepFluids(1.f / 45.f);
     stats.fluidMs = std::chrono::duration<float, std::milli>(clk::now() - a).count();
     fluidAcc_ = 0;
   }
