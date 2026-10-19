@@ -109,6 +109,7 @@ uniform vec3 uHoverMin, uHoverMax;
 uniform float uHoverPulse;
 uniform int uGhost;               // placement preview
 uniform int uDebug;
+uniform float uDepthScale;        // < 1 pulls a body in front of everything (held tool)
 uniform float uGroundY;          // the lawn continues past the simulated area
 
 #ifdef WORLD
@@ -577,10 +578,11 @@ void main() {
   if (any(isnan(col)) || any(isinf(col))) col = vec3(0.0);
   col = min(col, vec3(200.0));
   if (uDebug == 3) { oColor = vec4(any(isnan(col)) || any(isinf(col)) ? vec3(1, 0, 1) : (any(lessThan(col, vec3(0.0))) ? vec3(0, 1, 0) : col / (1.0 + col)), 1.0); gl_FragDepth = depth; return; }
+  depth *= uDepthScale;
   if (uGhost != 0) {
     float pulse = 0.5 + 0.5 * sin(uTime * 4.0);
-    col = mix(col, vec3(0.35, 0.95, 1.1), 0.45 + 0.1 * pulse);
-    oColor = vec4(col * 0.55, 0.55);
+    col = mix(col, vec3(0.3, 1.1, 1.25), 0.55 + 0.15 * pulse);
+    oColor = vec4(col * 0.75, 0.75);
   } else {
     oColor = vec4(col, 1.0);
   }

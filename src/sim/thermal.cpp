@@ -38,6 +38,10 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
   std::vector<ThermEvent> events;
   std::mutex mu;
   std::atomic<int> burnCount{0}, hotCount{0};
+  // Which bricks are being processed (heat only enters through faces they share).
+  std::vector<uint8_t> inList(v.bricks.size(), 0);
+  for (int b : list) inList[b] = 1;
+  std::vector<uint8_t> faceWarm(list.size(), 0);  // bit per face: hot cells there after the step
 
   Jobs::get().parallelFor((int)list.size(), 2, [&](int b0, int b1, int) {
     std::vector<ThermEvent> loc;
@@ -69,14 +73,21 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
           if (y < 15) addCell(l + 256);
         }
       }
+      // Faces next to bricks in this tick's list may receive heat.
+      auto nbIn = [&](int dx, int dy, int dz) {
+        int x = bx + dx, y = by + dy, z = bz + dz;
+        if (x < 0 || y < 0 || z < 0 || x >= v.bx || y >= v.by || z >= v.bz) return false;
+        return inList[x + v.bx * (z + v.bz * y)] != 0;
+      };
+      bool fy0 = nbIn(0, -1, 0), fy1 = nbIn(0, 1, 0), fz0 = nbIn(0, 0, -1), fz1 = nbIn(0, 0, 1), fx0 = nbIn(-1, 0, 0), fx1 = nbIn(1, 0, 0);
       for (int a = 0; a < 16; a++)
         for (int b2 = 0; b2 < 16; b2++) {
-          addCell(a | (b2 << 4));                // y = 0
-          addCell(a | (b2 << 4) | (15 << 8));    // y = 15
-          addCell(a | (b2 << 8));                // z = 0
-          addCell(a | (15 << 4) | (b2 << 8));    // z = 15
-          addCell((a << 4) | (b2 << 8));         // x = 0
-          addCell(15 | (a << 4) | (b2 << 8));    // x = 15
+          if (fy0) addCell(a | (b2 << 4));
+          if (fy1) addCell(a | (b2 << 4) | (15 << 8));
+          if (fz0) addCell(a | (b2 << 8));
+          if (fz1) addCell(a | (15 << 4) | (b2 << 8));
+          if (fx0) addCell((a << 4) | (b2 << 8));
+          if (fx1) addCell(15 | (a << 4) | (b2 << 8));
         }
       for (int wi = 0; wi < nwork; wi++) {
         int l = work[wi];
@@ -149,7 +160,12 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
         if ((T > AMBIENT && Tnew < AMBIENT && sumG == 0) || (T < AMBIENT && Tnew > AMBIENT && sumG == 0)) Tnew = AMBIENT;
         if (std::fabs(Tnew - AMBIENT) < 0.05f && !(fl & F_BURN)) Tnew = AMBIENT;
         out[l] = Tnew;
-        if (Tnew != AMBIENT || (fl & F_BURN)) active = true;
+        if (Tnew != AMBIENT || (fl & F_BURN)) {
+          active = true;
+          int lx = l & 15, lz = (l >> 4) & 15, ly = l >> 8;
+          uint8_t& fw = faceWarm[li];
+          fw |= (lx == 0 ? 1 : 0) | (lx == 15 ? 2 : 0) | (ly == 0 ? 4 : 0) | (ly == 15 ? 8 : 0) | (lz == 0 ? 16 : 0) | (lz == 15 ? 32 : 0);
+        }
         if (std::fabs(Tnew - AMBIENT) > 30) hotCount++;
         // Thresholds.
         if (!(fl & F_BURN) && M.ignite > 0 && Tnew >= M.ignite && airFaces > 0) loc.push_back({{x, y, z}, T_IGNITE});
@@ -185,8 +201,9 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
     if (sc.keep[li]) {
       hs.add(bi);
       int bx = bi % v.bx, bz = (bi / v.bx) % v.bz, by = bi / (v.bx * v.bz);
-      const int nbs[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+      const int nbs[6][4] = {{-1, 0, 0, 1}, {1, 0, 0, 2}, {0, -1, 0, 4}, {0, 1, 0, 8}, {0, 0, -1, 16}, {0, 0, 1, 32}};
       for (auto& d : nbs) {
+        if (!(faceWarm[li] & d[3])) continue;  // nothing warm on that face: neighbour stays cold
         int x = bx + d[0], y = by + d[1], z = bz + d[2];
         if (x < 0 || y < 0 || z < 0 || x >= v.bx || y >= v.by || z >= v.bz) continue;
         int nb = x + v.bx * (z + v.bz * y);
@@ -299,7 +316,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
       }
       case T_RUNAWAY:
         br->flags[l] |= F_BURN;
-        br->fuel[l] = 25;
+        br->fuel[l] = 200;  // ~10 s of venting flame at the default thermal warp
         br->temp[l] = std::max(br->temp[l], 400.f);
         v.markDirty(e.c.x, e.c.y, e.c.z);
         s.event(EV_IGNITE, worldPos(e.c), 2, m, br->comp[l]);

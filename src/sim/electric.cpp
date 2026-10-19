@@ -204,7 +204,15 @@ void Sim::stepDevices(float dt) {
     Body* b = sh.bodyId ? bodyById(sh.bodyId) : nullptr;
     Volume& v = b ? b->vol : world;
     if (sh.bodyId && !b) continue;
-    float per = 1400.f * dt * warp / std::max<size_t>(1, sh.cells.size());
+    // Internal resistance heats the cells too: ~600 W into the pack.
+    if (b) {
+      std::vector<std::pair<Brick*, int>> cellsIn;
+      b->vol.forEach([&](int x, int y, int z, Brick* br, int l) { if (br->comp[l] == sh.source && br->mat[l] == LIION) cellsIn.push_back({br, l}); });
+      float q = 600.f * dt * warp / std::max<size_t>(1, cellsIn.size());
+      for (auto& [br, l] : cellsIn) br->temp[l] += q / MATS[LIION].heatCap;
+      for (size_t k = 0; k < b->vol.bricks.size(); k++) if (b->vol.bricks[k]) b->heat.add((int)k);
+    }
+    float per = 1000.f * dt * warp / std::max<size_t>(1, sh.cells.size());
     for (auto& c : sh.cells) {
       Brick* br = v.inb(c.x, c.y, c.z) ? v.brick(c.x, c.y, c.z) : nullptr;
       if (!br) continue;

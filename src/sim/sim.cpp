@@ -186,7 +186,7 @@ void Sim::processSupport() {
       }
     }
     if (!supported && !list.empty()) {
-      if (list.size() <= 2) {
+      if (list.size() <= 10) {
         for (int64_t k : list) { ivec3 c = unpackKey(k); removeWorld(c.x, c.y, c.z, true); }
       } else {
         detachWorld(list);
@@ -490,7 +490,7 @@ void Sim::splitBody(Body& b) {
   for (size_t i = 0; i < parts.size(); i++) {
     if (i == keep) continue;
     Body* self = bodyById(bid);
-    if (parts[i].size() <= 2) {
+    if (parts[i].size() <= 8) {
       for (auto& c : parts[i]) removeBodyVoxel(*self, c.x, c.y, c.z, true);
       continue;
     }

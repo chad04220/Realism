@@ -42,6 +42,8 @@ struct Body {
   HotSet heat;                     // bricks with thermal activity
   bool frozen = false;             // pinned in place (workshop jig)
   bool ghost = false;              // placement preview: drawn only, never simulated
+  bool viewmodel = false;          // the tool in the player's hands (drawn opaque, in front)
+  bool hidden = false;             // not drawn this frame
   bool held = false;
   int lastHit = 0;
   float submerged = 0;             // fraction in water this step (for buoyancy and visuals)

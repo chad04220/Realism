@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
-#include <unordered_map>
 #include "../core/jobs.h"
 #include "sim.h"
 
@@ -48,7 +47,9 @@ float effMass(const Body* a, const Body* b, const vec3& ra, const vec3& rb, cons
 
 void Sim::stepPhysics(float dtFrame) {
   if (bodies.empty()) return;
-  const int SUB = 4;
+  int awakeCount = 0;
+  for (auto& b : bodies) if (!b->asleep && !b->frozen && !b->ghost) awakeCount++;
+  const int SUB = awakeCount > 120 ? 2 : awakeCount > 40 ? 3 : 4;
   const float h = dtFrame / SUB;
   const float slop = vs * 0.15f;
   std::vector<Contact> contacts;
@@ -150,70 +151,86 @@ void Sim::stepPhysics(float dtFrame) {
     contacts.clear();
     for (auto& v : perBody) contacts.insert(contacts.end(), v.begin(), v.end());
 
-    // ---- body-body contacts through a spatial hash of samples
+    // ---- body-body contacts: sweep-and-prune on bounding boxes, then
+    // sample-vs-sample tests for each overlapping pair.
     {
-      float cell = vs * 4.5f;
-      std::unordered_map<int64_t, std::vector<std::pair<int, int>>> grid;
-      grid.reserve(4096);
-      // Only bodies near an awake body need hashing.
-      std::vector<char> relevant(bodies.size(), 0);
-      for (size_t i = 0; i < bodies.size(); i++) {
-        if (bodies[i]->asleep || bodies[i]->frozen || bodies[i]->ghost) continue;
-        relevant[i] = 1;
-        for (size_t j = 0; j < bodies.size(); j++)
-          if (!relevant[j] && !bodies[j]->ghost && length(bodies[j]->pos - bodies[i]->pos) < bodies[i]->radius + bodies[j]->radius + vs * 2) relevant[j] = 1;
+      const size_t n = bodies.size();
+      struct Box { float lo[3], hi[3]; int i; };
+      std::vector<Box> boxes;
+      boxes.reserve(n);
+      for (size_t i = 0; i < n; i++) {
+        Body& b = *bodies[i];
+        if (b.ghost || b.samples.empty()) continue;
+        float r = b.radius + vs;
+        boxes.push_back({{b.pos.x - r, b.pos.y - r, b.pos.z - r}, {b.pos.x + r, b.pos.y + r, b.pos.z + r}, (int)i});
       }
-      std::vector<std::vector<vec3>> wpos(bodies.size());
-      for (size_t i = 0; i < bodies.size(); i++) {
-        if (!relevant[i]) continue;
+      std::sort(boxes.begin(), boxes.end(), [](const Box& a, const Box& b) { return a.lo[0] < b.lo[0]; });
+      std::vector<std::pair<int, int>> pairs;
+      for (size_t a = 0; a < boxes.size(); a++)
+        for (size_t c = a + 1; c < boxes.size() && boxes[c].lo[0] <= boxes[a].hi[0]; c++) {
+          const Box& A = boxes[a];
+          const Box& C = boxes[c];
+          if (A.lo[1] > C.hi[1] || C.lo[1] > A.hi[1] || A.lo[2] > C.hi[2] || C.lo[2] > A.hi[2]) continue;
+          Body& ba = *bodies[A.i];
+          Body& bc = *bodies[C.i];
+          bool aw = !ba.asleep && !ba.frozen, cw = !bc.asleep && !bc.frozen;
+          if (!aw && !cw) continue;
+          // The awake one is "A" in the contact (both awake: either).
+          if (aw) pairs.push_back({A.i, C.i}); else pairs.push_back({C.i, A.i});
+        }
+      // World positions of samples, once per body.
+      std::vector<std::vector<vec3>> wpos(n);
+      std::vector<char> need(n, 0);
+      for (auto& pr : pairs) { need[pr.first] = 1; need[pr.second] = 1; }
+      for (size_t i = 0; i < n; i++) {
+        if (!need[i]) continue;
         Body& b = *bodies[i];
         mat3 R = b.R();
         wpos[i].resize(b.samples.size());
-        for (size_t k = 0; k < b.samples.size(); k++) {
-          vec3 p = b.pos + R * b.samples[k].local;
-          wpos[i][k] = p;
-          ivec3 c = floorI(p / cell);
-          grid[packKey(c.x, c.y, c.z)].push_back({(int)i, (int)k});
-        }
+        for (size_t k = 0; k < b.samples.size(); k++) wpos[i][k] = b.pos + R * b.samples[k].local;
       }
-      for (size_t i = 0; i < bodies.size(); i++) {
-        Body& A = *bodies[i];
-        if (A.asleep || A.frozen) continue;
-        for (size_t k = 0; k < A.samples.size(); k++) {
-          const vec3& pa = wpos[i][k];
-          ivec3 c = floorI(pa / cell);
-          for (int dz = -1; dz <= 1; dz++)
-            for (int dy = -1; dy <= 1; dy++)
-              for (int dx = -1; dx <= 1; dx++) {
-                auto it = grid.find(packKey(c.x + dx, c.y + dy, c.z + dz));
-                if (it == grid.end()) continue;
-                for (auto [j, kk] : it->second) {
-                  if ((size_t)j == i) continue;
-                  Body& B = *bodies[j];
-                  bool bAwake = !B.asleep && !B.frozen;
-                  if (bAwake && B.id < A.id) continue;  // pair handled from the other side
-                  const Sample& sa = A.samples[k];
-                  const Sample& sb = B.samples[kk];
-                  vec3 d = pa - wpos[j][kk];
-                  float dist = length(d), rr = sa.r + sb.r;
-                  if (dist >= rr || dist < 1e-6f) continue;
-                  Contact ct;
-                  ct.a = &A; ct.b = &B;
-                  ct.n = d / dist;
-                  ct.depth = rr - dist;
-                  ct.p = pa - ct.n * sa.r;
-                  ct.ra = ct.p - A.pos; ct.rb = ct.p - B.pos;
-                  ct.cellA = sa.cell; ct.cellB = sb.cell;
-                  ct.matA = sa.mat; ct.matB = sb.mat;
-                  ct.compA = sa.comp; ct.compB = sb.comp;
-                  ct.mu = std::sqrt(MATS[sa.mat].friction * MATS[sb.mat].friction);
-                  if (sa.comp && comp(sa.comp).type == C_WHEEL) ct.wheel = sa.comp;
-                  contacts.push_back(ct);
-                  // A moving body pushes a sleeping one awake.
-                  if (B.asleep && length2(A.vel) + length2(A.angVel) * 0.05f > 0.02f) B.wake();
-                }
-              }
+      std::vector<std::vector<Contact>> perPair(pairs.size());
+      Jobs::get().parallelFor((int)pairs.size(), 4, [&](int b0, int b1, int) {
+        for (int pi = b0; pi < b1; pi++) {
+          Body& A = *bodies[pairs[pi].first];
+          Body& B = *bodies[pairs[pi].second];
+          const auto& pa = wpos[pairs[pi].first];
+          const auto& pb = wpos[pairs[pi].second];
+          vec3 bc = B.pos;
+          float br = B.radius + vs * 3;
+          for (size_t k = 0; k < A.samples.size(); k++) {
+            const Sample& sa = A.samples[k];
+            if (length2(pa[k] - bc) > (br + sa.r) * (br + sa.r)) continue;
+            for (size_t kk = 0; kk < B.samples.size(); kk++) {
+              const Sample& sb = B.samples[kk];
+              vec3 d = pa[k] - pb[kk];
+              float rr = sa.r + sb.r;
+              float d2 = length2(d);
+              if (d2 >= rr * rr || d2 < 1e-12f) continue;
+              float dist = std::sqrt(d2);
+              Contact ct;
+              ct.a = &A; ct.b = &B;
+              ct.n = d / dist;
+              ct.depth = rr - dist;
+              ct.p = pa[k] - ct.n * sa.r;
+              ct.ra = ct.p - A.pos; ct.rb = ct.p - B.pos;
+              ct.cellA = sa.cell; ct.cellB = sb.cell;
+              ct.matA = sa.mat; ct.matB = sb.mat;
+              ct.compA = sa.comp; ct.compB = sb.comp;
+              ct.mu = std::sqrt(MATS[sa.mat].friction * MATS[sb.mat].friction);
+              if (sa.comp && comp(sa.comp).type == C_WHEEL) ct.wheel = sa.comp;
+              perPair[pi].push_back(ct);
+            }
+          }
         }
+      });
+      for (size_t pi = 0; pi < pairs.size(); pi++) {
+        if (perPair[pi].empty()) continue;
+        Body& A = *bodies[pairs[pi].first];
+        Body& B = *bodies[pairs[pi].second];
+        // A moving body pushes a sleeping one awake.
+        if (B.asleep && length2(A.vel) + length2(A.angVel) * 0.05f > 0.02f) B.wake();
+        contacts.insert(contacts.end(), perPair[pi].begin(), perPair[pi].end());
       }
     }
     stats.contacts = (int)contacts.size();
@@ -252,7 +269,8 @@ void Sim::stepPhysics(float dtFrame) {
     }
 
     // ---- solve
-    for (int it = 0; it < 8; it++) {
+    const int iters = contacts.size() > 6000 ? 5 : 8;
+    for (int it = 0; it < iters; it++) {
       for (auto& c : contacts) {
         Body* A = c.a;
         Body* B = (c.b && !c.b->asleep && !c.b->frozen) ? c.b : nullptr;

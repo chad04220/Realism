@@ -184,7 +184,7 @@ void Game::drawHud(float dt) {
     // Tiny label under the crosshair.
     text(cx, cy + 18 * s, comp(hover_.comp).name, 14 * s, theme::text.alpha(0.8f), 1);
   }
-  if (target && (tool_ == T_SCAN || hover_.comp || hit_.body >= 0)) drawTargetCard(width() - 360 * s, height() * 0.5f - 160 * s);
+  if (target && (tool_ == T_SCAN || hover_.comp || hit_.body >= 0)) drawTargetCard(width() - 360 * s, std::max(height() * 0.5f - 60 * s, 270 * s));
 
   drawHotbar();
 

@@ -109,6 +109,7 @@ bool Game::init(const Args& args) {
   audio.init(settings.volume);
   workshop = std::make_unique<Workshop>(*this);
   workshop->createJig();
+  buildViewmodels();
   pl_.pos = scene.spawn;
   pl_.yaw = scene.spawnYaw;
   pl_.pitch = -0.12f;
@@ -140,7 +141,9 @@ int Game::run(const Args& args) {
     if (scripted_) dt = 1.f / 60.f;
     dt = std::min(dt, 1.f / 20.f);
     if (scripted_) {
+      float mx = scriptIn_.mx, my = scriptIn_.my;
       scriptIn_ = plat::Input{};
+      scriptIn_.mx = mx; scriptIn_.my = my;
       while (scriptWait_ <= 0 && scriptPos_ < script_.size() && !quit_) runScriptLine(script_[scriptPos_++], quit_);
       if (scriptWait_ > 0) scriptWait_--;
       if (scriptPos_ >= script_.size() && scriptWait_ <= 0) quit_ = true;
@@ -212,8 +215,10 @@ void Game::frame(float dt) {
   }
   cam.update((float)plat::width() / std::max(1, plat::height()));
   if (mode_ == M_PLAY && !menu_) updateHover();
+  updateViewmodel(dt);
 
   if (!paused_ && !menu_) sim.step(dt);
+  if (mode_ == M_PLAY && !menu_) updateHover();  // bodies may have been added or removed
   handleEvents();
   audio.setListener(cam.pos, cam.right);
   flash_ = std::max(0.f, flash_ - dt * 3);
@@ -271,8 +276,14 @@ void Game::updatePlay(float dt, plat::Input& in) {
     if (n) toast("Detonating " + std::to_string(n) + (n == 1 ? " charge" : " charges"), ui::theme::warm, ui::I_BOMB);
     else toast("No remote charges placed (right-click with Charges)", ui::theme::dim, ui::I_BOMB);
   }
-  if (in.pressed['E']) useKey();
   movePlayer(dt, in);
+  // Aim from where we are now (body indices from last frame may be stale).
+  cam.pos = pl_.pos + vec3(0, pl_.eye, 0);
+  cam.yaw = pl_.yaw;
+  cam.pitch = pl_.pitch;
+  cam.update((float)plat::width() / std::max(1, plat::height()));
+  updateHover();
+  if (in.pressed['E']) useKey();
   useTools(dt, in);
   toolAnim_ = std::min(1.f, toolAnim_ + dt * 6);
 }
@@ -445,6 +456,94 @@ void Game::updateHover() {
   hover_.comp = c;
   hover_.lo = lo;
   hover_.hi = hi;
+}
+
+// ----------------------------------------------------------------------- held tools
+
+int Game::makeViewmodel(int tool) {
+  const float vs = sim.vs;
+  Volume v((int)std::ceil(0.16f / vs), (int)std::ceil(0.4f / vs), (int)std::ceil(0.24f / vs));
+  Shaper s(&v, vs);
+  uint32_t c = newComp([&] { Component cc; cc.name = TOOLS[tool].name; cc.object = "Your hands"; return cc; }());
+  s.comp = c;
+  switch (tool) {
+    case T_HAMMER:
+      s.mat = OAK; s.box(vec3(0.05f, 0.0f, 0.1f), vec3(0.075f, 0.3f, 0.125f));
+      s.mat = RUBBER; s.box(vec3(0.045f, 0.0f, 0.095f), vec3(0.08f, 0.1f, 0.13f));
+      s.mat = STEEL; s.box(vec3(0.0f, 0.28f, 0.085f), vec3(0.15f, 0.33f, 0.14f));
+      break;
+    case T_WRENCH:
+      s.mat = STEEL; s.box(vec3(0.05f, 0.0f, 0.1f), vec3(0.075f, 0.26f, 0.125f));
+      s.box(vec3(0.025f, 0.26f, 0.1f), vec3(0.1f, 0.33f, 0.125f));
+      s.clear(vec3(0.05f, 0.29f, 0.1f), vec3(0.075f, 0.33f, 0.125f));
+      break;
+    case T_CHISEL:
+      s.mat = OAK; s.cylinder(vec3(0.0625f, 0.0f, 0.1125f), vec3(0.0625f, 0.13f, 0.1125f), 0.022f);
+      s.mat = STEEL; s.box(vec3(0.05f, 0.13f, 0.1f), vec3(0.075f, 0.28f, 0.125f));
+      break;
+    case T_TORCH:
+      s.mat = PAINT_RED; s.cylinder(vec3(0.0625f, 0.0f, 0.15f), vec3(0.0625f, 0.16f, 0.15f), 0.045f);
+      s.mat = BRASS; s.box(vec3(0.05f, 0.16f, 0.125f), vec3(0.075f, 0.2f, 0.175f));
+      s.mat = STEEL; s.box(vec3(0.05f, 0.175f, 0.0f), vec3(0.075f, 0.2f, 0.13f));
+      break;
+    case T_HOSE:
+      s.mat = RUBBER; s.cylinder(vec3(0.0625f, 0.0f, 0.2f), vec3(0.0625f, 0.12f, 0.13f), 0.02f);
+      s.mat = BRASS; s.cylinder(vec3(0.0625f, 0.12f, 0.15f), vec3(0.0625f, 0.13f, 0.0f), 0.025f);
+      break;
+    case T_CHARGE:
+      s.mat = CHARGE; s.box(vec3(0.05f, 0.05f, 0.1f), vec3(0.1f, 0.25f, 0.15f));
+      s.mat = COPPER; s.box(vec3(0.05f, 0.25f, 0.1f), vec3(0.075f, 0.3f, 0.125f));
+      break;
+    case T_BUILD:
+      s.mat = BUILD_PALETTE[buildMat_]; s.box(vec3(0.0f, 0.1f, 0.05f), vec3(0.125f, 0.225f, 0.175f));
+      break;
+    case T_SCAN:
+      s.mat = PAINT_BLUE; s.box(vec3(0.0f, 0.0f, 0.1f), vec3(0.15f, 0.2f, 0.15f));
+      s.mat = GLASS; s.box(vec3(0.025f, 0.1f, 0.075f), vec3(0.125f, 0.175f, 0.1f));
+      s.mat = COPPER; s.box(vec3(0.1f, 0.2f, 0.11f), vec3(0.125f, 0.3f, 0.135f));
+      break;
+    default:
+      return 0;
+  }
+  Body* b = spawnBody(sim, std::move(v), vec3(0, -50, 0));
+  if (!b) return 0;
+  b->ghost = b->viewmodel = b->frozen = b->asleep = true;
+  b->hidden = true;
+  return b->id;
+}
+
+void Game::buildViewmodels() {
+  for (int t = 0; t < T_COUNT; t++) viewIds_[t] = makeViewmodel(t);
+  viewBuildMat_ = BUILD_PALETTE[buildMat_];
+}
+
+void Game::updateViewmodel(float dt) {
+  if (viewBuildMat_ != BUILD_PALETTE[buildMat_] && viewIds_[T_BUILD]) {
+    if (Body* old = sim.bodyById(viewIds_[T_BUILD])) { int i = sim.bodyIndex(old); if (i >= 0) sim.removeBody(i); }
+    viewIds_[T_BUILD] = makeViewmodel(T_BUILD);
+    viewBuildMat_ = BUILD_PALETTE[buildMat_];
+  }
+  useAnim_ = std::max(0.f, useAnim_ - dt * 5);
+  quat qc = quat::axisAngle(vec3(0, 1, 0), -cam.yaw) * quat::axisAngle(vec3(1, 0, 0), cam.pitch);
+  for (int t = 0; t < T_COUNT; t++) {
+    Body* b = viewIds_[t] ? sim.bodyById(viewIds_[t]) : nullptr;
+    if (!b) continue;
+    bool show = t == tool_ && mode_ == M_PLAY && hud_ && !menu_;
+    b->hidden = !show;
+    if (!show) continue;
+    float raise = std::min(1.f, toolAnim_ * 1.4f);
+    vec3 off(0.25f, -0.2f - (1 - raise) * 0.2f + std::sin(pl_.bob * 2) * 0.006f, -0.5f);
+    // Tilt: tools lean forward and in; the hammer winds up and swings.
+    float pitch = -0.55f, roll = 0.3f;
+    if (t == T_HAMMER) { pitch += charge_ * 0.9f - std::sin(swing_ * PI) * 1.3f; off.z += swing_ * 0.08f; }
+    if (t == T_CHISEL || t == T_WRENCH) { pitch -= swing_ * 0.6f + useAnim_ * 0.3f; off.z -= workProgress_ > 0 ? std::sin(time_ * 30) * 0.004f : 0; }
+    if (t == T_TORCH || t == T_HOSE) { pitch = -1.3f; roll = 0.1f; off.y += 0.04f; off += vec3((rng().f() - 0.5f), (rng().f() - 0.5f), 0) * (useAnim_ * 0.004f); }
+    if (t == T_SCAN) { pitch = -1.0f; roll = 0.0f; off.x = 0.16f; }
+    quat ql = quat::axisAngle(vec3(0, 0, 1), -roll) * quat::axisAngle(vec3(1, 0, 0), pitch);
+    b->rot = qc * ql;
+    b->pos = cam.pos + qc.rotate(off);
+    b->updateInertiaWorld();
+  }
 }
 
 void Game::toggleSwitch(int bi, uint32_t c) {
@@ -763,6 +862,7 @@ void Game::useTools(float dt, plat::Input& in) {
     }
     case T_CHISEL:
       if (hit_.hit && hit_.t < 3.f && ((L && repeat_ <= 0) || Rp)) {
+        useAnim_ = 1;
         if (Rp) chiselAt(hit_, 0.5f, 25.f);
         else chiselAt(hit_, 1.8f, 30.f);
         repeat_ = 0.14f;
@@ -773,6 +873,7 @@ void Game::useTools(float dt, plat::Input& in) {
       vec3 nozzle = cam.pos + cam.forward * 0.35f + cam.right * 0.12f - cam.up * 0.1f;
       bool reach = hit_.hit && hit_.t < 1.3f;
       if (L) {
+        useAnim_ = 1;
         for (int i = 0; i < 3; i++)
           sim.emit(FX_FIRE, nozzle + cam.forward * rng().range(0.0f, 0.1f), cam.forward * rng().range(3, 6) + rng().unitVec() * 0.3f, rng().range(0.08f, 0.2f), sim.vs * 1.4f, vec3(0.6f, 0.9f, 2.2f));
         if (reach) {
@@ -929,6 +1030,7 @@ void Game::resetWorld() {
   sim.events.clear();
   ren.uploadAllWorld();
   workshop->createJig();
+  buildViewmodels();
   pl_ = Player{};
   pl_.pos = scene.spawn;
   pl_.yaw = scene.spawnYaw;
@@ -964,7 +1066,7 @@ void Game::runScriptLine(const std::string& line, bool& quit) {
   (void)holdKey; (void)holdFrames; (void)holdBtn;
   if (cmd == "pos") { ss >> pl_.pos.x >> pl_.pos.y >> pl_.pos.z >> pl_.yaw >> pl_.pitch; pl_.vel = vec3(0); }
   else if (cmd == "wait") { ss >> scriptWait_; }
-  else if (cmd == "tool") { int t; ss >> t; tool_ = clampf((float)t, 0, T_COUNT - 1); }
+  else if (cmd == "tool") { int t; ss >> t; tool_ = std::clamp(t - 1, 0, T_COUNT - 1); }
   else if (cmd == "press") {
     std::string k; ss >> k;
     int code = k.size() == 1 ? (int)toupper(k[0]) : k == "TAB" ? key::Tab : k == "ESC" ? key::Escape : k == "F1" ? key::F1 : k == "F3" ? key::F3 : -1;
@@ -995,6 +1097,13 @@ void Game::runScriptLine(const std::string& line, bool& quit) {
   else if (cmd == "launch") { workshop->launch(); }
   else if (cmd == "explode") { vec3 p; float e; ss >> p.x >> p.y >> p.z >> e; sim.explode(p, e); }
   else if (cmd == "toggle") { updateHover(); useKey(); }
+  else if (cmd == "switch") {
+    // Flip every switch belonging to the named object.
+    std::string name; std::getline(ss, name); while (!name.empty() && name[0] == ' ') name.erase(0, 1);
+    for (size_t i = 0; i < sim.bodies.size(); i++)
+      for (uint32_t c : sim.bodies[i]->compIds)
+        if (comp(c).type == C_SWITCH && (comp(c).object == name || name.empty())) toggleSwitch((int)i, c);
+  }
   else if (cmd == "smooth") { int v; ss >> v; ropt.smooth = v != 0; }
   else if (cmd == "log") {
     fprintf(stderr, "[t=%.2f] bodies=%zu awake=%d debris=%zu fx=%zu burning=%d hot=%d powered=%d circuits=%d phys=%.1fms therm=%.1fms gpu=%.1fms fps=%.0f\n",

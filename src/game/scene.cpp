@@ -167,8 +167,8 @@ SceneInfo buildScene(Sim& s) {
             vec3 p = sh.centre(x, y, z);
             float h = p.y - base;
             // Gable triangles on the east and west walls; flat tops elsewhere.
-            if (wi >= 2) { if (p.y > roofY(p.z) - 0.06f) continue; }
-            else if (p.y > top) continue;
+            // Walls run up to the underside of the tiles (gables on east/west).
+            if (p.y > roofY(p.z) - (wi >= 2 ? 0.06f : 0.0f)) continue;
             // Openings.
             if (wi == 1 && p.x > doorX0 && p.x < doorX1 && p.y < doorTop + 0.1f) continue;
             if (wi == 2 && p.z > winZ0 && p.z < winZ1 && p.y > winY0 && p.y < winY1 + 0.1f) continue;

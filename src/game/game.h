@@ -90,6 +90,9 @@ class Game {
   void chiselAt(const Hit& h, float radius, float energy);
   void extinguish(const Hit& h, float radius);
   Body* spawnTemplate(const Template& t, const vec3& worldMin, const quat& rot = quat());
+  void buildViewmodels();
+  int makeViewmodel(int tool);
+  void updateViewmodel(float dt);
 
   Mode mode_ = M_PLAY;
   Player pl_;
@@ -131,6 +134,9 @@ class Game {
   size_t scriptPos_ = 0;
   int scriptWait_ = 0;
   std::string menuPage_ = "main";
+  int viewIds_[T_COUNT] = {};
+  uint8_t viewBuildMat_ = 0;
+  float useAnim_ = 0;
   friend class Workshop;
 };
 

@@ -521,12 +521,13 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
   int rw = std::max(64, (int)(winW * opt.renderScale)), rh = std::max(64, (int)(winH * opt.renderScale));
   ensureTargets(rw, rh);
   // GPU timing (previous frame's result).
-  {
+  static int frames = 0;
+  if (frames++ > 1) {
     GLint avail = 0;
     glGetQueryObjectiv(query_[queryIdx_ ^ 1], GL_QUERY_RESULT_AVAILABLE, &avail);
     if (avail) { uint64_t ns = 0; glGetQueryObjectui64v(query_[queryIdx_ ^ 1], GL_QUERY_RESULT, &ns); gpuMs_ = gpuMs_ * 0.9f + (ns / 1e6f) * 0.1f; }
-    glBeginQuery(GL_TIME_ELAPSED, query_[queryIdx_]);
   }
+  glBeginQuery(GL_TIME_ELAPSED, query_[queryIdx_]);
   updateWorld();
   updateBodies();
   updateDynOcc();
@@ -556,6 +557,7 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
     }
     s.set("uHoverPulse", 0.5f + 0.5f * std::sin(time * 5.f));
     s.set("uGhost", 0);
+    s.set("uDepthScale", 1.f);
     s.set("uGroundY", groundY);
     s.set("uDebug", getenv("REALISM_DEBUG_PASS") ? atoi(getenv("REALISM_DEBUG_PASS")) : 0);
     s.set("uObjData", 4);
@@ -597,7 +599,7 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
   for (size_t bi = 0; bi < sim_->bodies.size(); bi++) {
     Body& b = *sim_->bodies[bi];
     auto it = bodies_.find(b.id);
-    if (it == bodies_.end() || !it->second.main.data) continue;
+    if (it == bodies_.end() || !it->second.main.data || b.hidden) continue;
     BodyGpu& g = it->second;
     // Frustum-ish cull: behind the camera and far away.
     vec3 toB = b.pos - cam.pos;
@@ -621,8 +623,9 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
     };
     (void)rotM;
     setHover(bodyShader_, (int)bi);
-    bodyShader_.set("uGhost", b.ghost ? 1 : 0);
-    glDepthMask(b.ghost ? GL_FALSE : GL_TRUE);
+    bodyShader_.set("uGhost", b.ghost && !b.viewmodel ? 1 : 0);
+    bodyShader_.set("uDepthScale", b.viewmodel ? 0.04f : 1.f);
+    glDepthMask(b.ghost && !b.viewmodel ? GL_FALSE : GL_TRUE);
     drawTex(g.main, model, R);
     for (auto& [cid, tex] : g.parts) {
       const RotPart* rp = nullptr;

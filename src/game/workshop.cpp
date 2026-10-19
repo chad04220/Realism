@@ -654,6 +654,43 @@ void Workshop::update(float dt, plat::Input& in, Camera& cam) {
 void Workshop::drawUI(float dt) {
   float s = scale();
   const float W = (float)width(), H = (float)height();
+  // ---- build grid projected onto the jig floor (10 cm cells, 50 cm majors)
+  if (Body* j = jig()) {
+    const Camera& cam = g_.cam;
+    auto proj = [&](const vec3& p, vec2& out) {
+      vec4 c = cam.viewProj * vec4(p, 1.f);
+      if (c.w <= 0.05f) return false;
+      out = vec2((c.x / c.w * 0.5f + 0.5f) * W, (0.5f - c.y / c.w * 0.5f) * H);
+      return true;
+    };
+    const float vs = g_.sim.vs;
+    vec3 o = g_.scene.jigOrigin + vec3(0, 0.002f, 0);
+    float X = j->vol.nx * vs, Z = j->vol.nz * vs;
+    auto seg = [&](vec3 a, vec3 b, float th, Color c) {
+      // Split long lines so the projection stays well-behaved near the camera.
+      const int n = 8;
+      for (int i = 0; i < n; i++) {
+        vec2 p0, p1;
+        if (proj(lerp(a, b, (float)i / n), p0) && proj(lerp(a, b, (float)(i + 1) / n), p1)) line(p0.x, p0.y, p1.x, p1.y, th, c);
+      }
+    };
+    for (float x = 0; x <= X + 1e-3f; x += 0.1f) {
+      bool major = std::fabs(std::fmod(x + 1e-3f, 0.5f)) < 0.01f;
+      seg(o + vec3(x, 0, 0), o + vec3(x, 0, Z), major ? 1.4f : 1.f, Color(1, 1, 1, major ? 0.22f : 0.08f));
+    }
+    for (float z = 0; z <= Z + 1e-3f; z += 0.1f) {
+      bool major = std::fabs(std::fmod(z + 1e-3f, 0.5f)) < 0.01f;
+      seg(o + vec3(0, 0, z), o + vec3(X, 0, z), major ? 1.4f : 1.f, Color(1, 1, 1, major ? 0.22f : 0.08f));
+    }
+    // Jig volume outline.
+    float Y = j->vol.ny * vs;
+    Color edge = theme::accent.alpha(0.35f);
+    vec3 c8[8];
+    for (int i = 0; i < 8; i++) c8[i] = o + vec3((i & 1) ? X : 0, (i & 2) ? Y : 0, (i & 4) ? Z : 0);
+    int e[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+    for (auto& k : e) seg(c8[k[0]], c8[k[1]], 1.5f, edge);
+    if (mirror_) seg(o + vec3(X * 0.5f, 0, 0), o + vec3(X * 0.5f, 0, Z), 2.f, theme::warm.alpha(0.6f));
+  }
   // ---- left palette
   float px = 16 * s, py = 16 * s, pw = 320 * s, ph = H - 32 * s;
   shadow(px, py, pw, ph, 16 * s, 20 * s, 0.45f);
