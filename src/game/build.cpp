@@ -102,7 +102,7 @@ Body* spawnBody(Sim& s, Volume&& vol, const vec3& worldMin) {
   return b;
 }
 
-bool routeWire(Volume& v, const ivec3& from, const ivec3& to, uint32_t comp, uint8_t wmat) {
+bool routeWire(Volume& v, const ivec3& from, const ivec3& to, uint32_t comp, uint8_t wmat, std::vector<ivec3>* placed) {
   auto special = [&](int x, int y, int z) {
     uint8_t m = v.mat(x, y, z);
     return m != AIR && (MATS[m].wire || isSpecialElectric(m) || m == SWITCH_OFF);
@@ -165,6 +165,7 @@ bool routeWire(Volume& v, const ivec3& from, const ivec3& to, uint32_t comp, uin
   for (int i = found; i >= 0; i = prev[i]) {
     int x = i % nx, z = (i / nx) % nz, y = i / (nx * nz);
     v.set(x, y, z, wmat, comp);
+    if (placed) placed->push_back({x, y, z});
     if (prev[i] == -1) break;
   }
   return true;

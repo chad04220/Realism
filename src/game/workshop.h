@@ -26,7 +26,7 @@ class Workshop {
   std::vector<std::string> blueprintNames() const;
 
  private:
-  enum EditTool { E_PLACE, E_ERASE, E_PAINT, E_PICK };
+  enum EditTool { E_PLACE, E_ERASE, E_PAINT, E_PICK, E_WIRE };
   enum Tab { TAB_MATS, TAB_PARTS, TAB_SALVAGE, TAB_BLUEPRINTS };
   struct Edit { ivec3 p; Cell before, after; };
   struct Snapshot { std::vector<Edit> edits; };
@@ -82,4 +82,7 @@ class Workshop {
   float anTimer_ = 0;
   std::string saveName_ = "My build";
   bool typingName_ = false;
+  bool wireStarted_ = false;
+  ivec3 wireStart_;
+  void wireClick(const ivec3& cell);
 };

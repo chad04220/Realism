@@ -33,7 +33,7 @@ struct Shaper {
 // Lay a copper wire through empty cells from one conductor to another without
 // touching any other conductor or electrical part on the way (no accidental
 // shorts). Returns false if no route exists.
-bool routeWire(Volume& v, const ivec3& from, const ivec3& to, uint32_t comp, uint8_t mat = COPPER);
+bool routeWire(Volume& v, const ivec3& from, const ivec3& to, uint32_t comp, uint8_t mat = COPPER, std::vector<ivec3>* placed = nullptr);
 
 // Make a free rigid body from a volume whose (0,0,0) corner sits at worldMin.
 Body* spawnBody(Sim& s, Volume&& vol, const vec3& worldMin);

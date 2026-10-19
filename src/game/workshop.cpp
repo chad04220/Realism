@@ -293,6 +293,49 @@ void Workshop::paint(const ivec3& c) {
   commit(std::move(edits));
 }
 
+void Workshop::wireClick(const ivec3& c) {
+  Body* j = jig();
+  if (!j) return;
+  uint8_t m = j->vol.matI(c);
+  if (!MATS[m].wire) {
+    status_ = "Click a conductor: a battery terminal, a copper lead or tab, a switch or an existing wire";
+    statusT_ = 3;
+    return;
+  }
+  if (!wireStarted_) {
+    wireStarted_ = true;
+    wireStart_ = c;
+    status_ = std::string("Wire from ") + MATS[m].name + " \xE2\x86\x92 now click where it should go";
+    statusT_ = 6;
+    g_.audio.playUi(SFX_CLICK, 0.5f, 1.2f);
+    return;
+  }
+  wireStarted_ = false;
+  if (c == wireStart_) { status_ = "Wire cancelled"; statusT_ = 2; return; }
+  Component wc;
+  wc.name = "Copper wire";
+  wc.object = "Workshop build";
+  wc.joint = joints::glued;
+  uint32_t id = newComp(wc);
+  std::vector<ivec3> laid;
+  if (!routeWire(j->vol, wireStart_, c, id, COPPER, &laid)) {
+    status_ = "No clear route: wires never touch other conductors (that would short). Move parts apart or wire by hand.";
+    statusT_ = 5;
+    return;
+  }
+  std::vector<Edit> edits;
+  for (auto& p : laid) {
+    Cell after = j->vol.get(p.x, p.y, p.z);
+    edits.push_back({p, Cell{}, after});
+  }
+  commit(std::move(edits));
+  char b[96];
+  snprintf(b, sizeof b, "Wired: %.0f cm of copper", laid.size() * g_.sim.vs * 100);
+  status_ = b;
+  statusT_ = 3;
+  g_.audio.playUi(SFX_CLICK, 0.6f, 0.8f);
+}
+
 void Workshop::pick(const ivec3& c) {
   Body* j = jig();
   if (!j) return;
@@ -393,7 +436,7 @@ bool Workshop::loadBlueprint(const std::string& name) {
     o = vec3(std::floor(o.x / vs) * vs, 0, std::floor(o.z / vs) * vs);
     bool ok = a->build(j->vol, o);
     afterEdit();
-    status_ = ok ? "Loaded " + name + ". Try its switch (click the part, then launch)." : name + " loaded, but a wire couldn't be routed";
+    status_ = ok ? "Loaded " + name + ". Point at its switch and press E to test it, then launch." : name + " loaded, but a wire couldn't be routed";
     statusT_ = 4;
     return true;
   }
@@ -553,6 +596,7 @@ void Workshop::update(float dt, plat::Input& in, Camera& cam) {
       if (in.pressed['2']) tool_ = E_ERASE;
       if (in.pressed['3']) tool_ = E_PAINT;
       if (in.pressed['4']) tool_ = E_PICK;
+      if (in.pressed['5']) { tool_ = E_WIRE; wireStarted_ = false; }
       if (in.pressed[key::LBracket]) brush_ = std::max(1, brush_ - 1);
       if (in.pressed[key::RBracket]) brush_ = std::min(4, brush_ + 1);
       if (in.pressed[key::Enter]) { launch(); return; }
@@ -589,6 +633,7 @@ void Workshop::update(float dt, plat::Input& in, Camera& cam) {
   bool onFloor = false;
   hoverValid_ = !overUI && cursorCell(ro, rd, cell, hitCell, onFloor);
   hoverCell_ = (tool_ == E_PLACE) ? cell : hitCell;
+  if (tool_ == E_WIRE && !hoverValid_) {}
   updateGhost(cell, hoverValid_);
 
   // Highlight the part under the cursor.
@@ -629,6 +674,8 @@ void Workshop::update(float dt, plat::Input& in, Camera& cam) {
         paint(hitCell);
       } else if (tool_ == E_PICK && !onFloor) {
         pick(hitCell);
+      } else if (tool_ == E_WIRE && !onFloor && lp) {
+        wireClick(hitCell);
       }
       lastPlaced_ = target;
     }
@@ -802,7 +849,7 @@ void Workshop::drawUI(float dt) {
   // ---- top toolbar
   {
     float bs = 44 * s, gap = 6 * s;
-    int n = 11;
+    int n = 12;
     float tw2 = n * bs + (n - 1) * gap + 24 * s;
     float tx = W * 0.5f - tw2 * 0.5f + 60 * s, ty = 16 * s;
     shadow(tx, ty, tw2, bs + 16 * s, 14 * s, 16 * s, 0.4f);
@@ -814,6 +861,8 @@ void Workshop::drawUI(float dt) {
     x += bs + gap;
     if (iconButton(I_PAINT, x, y2, bs, tool_ == E_PAINT, "Paint material (3)")) { tool_ = E_PAINT; tab_ = TAB_MATS; } x += bs + gap;
     if (iconButton(I_EYEDROP, x, y2, bs, tool_ == E_PICK, "Pick material (4)")) { tool_ = E_PICK; }
+    x += bs + gap;
+    if (iconButton(I_BOLT, x, y2, bs, tool_ == E_WIRE, "Wire: click two conductors (5)")) { tool_ = E_WIRE; wireStarted_ = false; }
     x += bs + gap;
     x += 8 * s;
     if (iconButton(I_ROTATE, x, y2, bs, false, "Rotate part (R)")) rotYaw_ = (rotYaw_ + 1) % 4;
@@ -911,7 +960,7 @@ void Workshop::drawUI(float dt) {
 
   // ---- bottom hints + status
   {
-    std::string h = "LMB place  \xC2\xB7  RMB click erase  \xC2\xB7  RMB drag orbit  \xC2\xB7  MMB pan  \xC2\xB7  wheel zoom  \xC2\xB7  R rotate  \xC2\xB7  F tip  \xC2\xB7  M mirror  \xC2\xB7  E use  \xC2\xB7  Ctrl+Z undo";
+    std::string h = tool_ == E_WIRE ? "Wire: click a terminal, lead or switch end, then another \xC2\xB7 RMB click erases a wire \xC2\xB7 Esc cancels" : "LMB place  \xC2\xB7  RMB click erase  \xC2\xB7  RMB drag orbit  \xC2\xB7  MMB pan  \xC2\xB7  wheel zoom  \xC2\xB7  R rotate  \xC2\xB7  F tip  \xC2\xB7  M mirror  \xC2\xB7  E use  \xC2\xB7  Ctrl+Z undo";
     float w = textWidth(h, 13 * s) + 30 * s;
     float x = W * 0.5f - w * 0.5f + 60 * s, y2 = H - 46 * s;
     rectBorder(x, y2, w, 30 * s, theme::panel, theme::line, 15 * s);

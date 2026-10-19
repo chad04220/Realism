@@ -8,8 +8,8 @@ The desk lamp is a cast-iron base, a 12 V Li-ion pack with + and − terminals, 
 
 | | |
 |---|---|
-| ![Workbench, lit lamp, part inspector](docs/screenshots/workbench.jpg) | ![Workshop](docs/screenshots/workshop.jpg) |
-| ![After a 400 kJ blast](docs/screenshots/explosion.jpg) | ![Pond](docs/screenshots/pond.jpg) |
+| ![Workbench, lit lamp, Scanner readout](docs/screenshots/workbench.jpg) | ![Workshop with the Rover blueprint](docs/screenshots/workshop.jpg) |
+| ![After a 300 kJ blast](docs/screenshots/explosion.jpg) | ![Blowtorch on a brick wall: 1500 °C](docs/screenshots/torch.jpg) |
 
 ## What's simulated
 
@@ -95,6 +95,7 @@ Looking at anything shows a card with the part, its object, its material, its te
 The concrete pad north of the shed holds a build jig, with an orbit camera around it.
 
 - **Placing**: left-click places, right-click erases, right-drag orbits, middle-drag pans, and the wheel zooms.
+- **Wire tool (5)**: click one conductor (a battery terminal, a component lead or tab, a switch end) and then another. A copper wire is routed between them automatically, and it never touches any other conductor, so you can't create an accidental short.
 - **Parts**: drop in batteries, motors, wheels, propellers, switches, bulbs, heaters, solar panels, rockets, charges and crates. Rotate with **R**, tip over with **F**, and mirror left/right with **M**.
 - **Materials**: build voxel by voxel from 24 materials, with brush sizes 1–4.
 - **Salvage**: parts you salvaged in the world with the wrench appear in the Salvage tab, with their original shape.

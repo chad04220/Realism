@@ -678,7 +678,7 @@ void main() {
     vec3 col = mix(vec3(1.6, 0.25, 0.04), vec3(3.2, 2.2, 0.9), smoothstep(0.35, 0.9, heat));
     c = vec4(col * vColor.rgb * shape * soft * (1.0 - age * 0.7) * 0.45, 0.0);
   } else if (kind == 1) {  // smoke
-    float a = shape * (1.0 - age) * 0.55 * soft;
+    float a = shape * (1.0 - age) * (1.0 - age) * 0.4 * soft;
     c = vec4(vColor.rgb * a, a);
   } else if (kind == 2 || kind == 7) { // spark / ember
     float a = smoothstep(1.0, 0.0, r) * (1.0 - age);

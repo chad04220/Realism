@@ -498,9 +498,9 @@ int Game::makeViewmodel(int tool) {
       s.mat = BUILD_PALETTE[buildMat_]; s.box(vec3(0.0f, 0.1f, 0.05f), vec3(0.125f, 0.225f, 0.175f));
       break;
     case T_SCAN:
-      s.mat = PAINT_BLUE; s.box(vec3(0.0f, 0.0f, 0.1f), vec3(0.15f, 0.2f, 0.15f));
-      s.mat = GLASS; s.box(vec3(0.025f, 0.1f, 0.075f), vec3(0.125f, 0.175f, 0.1f));
-      s.mat = COPPER; s.box(vec3(0.1f, 0.2f, 0.11f), vec3(0.125f, 0.3f, 0.135f));
+      s.mat = PAINT_BLUE; s.box(vec3(0.0f, 0.0f, 0.1f), vec3(0.1f, 0.15f, 0.125f));
+      s.mat = GLASS; s.box(vec3(0.025f, 0.075f, 0.075f), vec3(0.075f, 0.125f, 0.1f));
+      s.mat = COPPER; s.box(vec3(0.075f, 0.15f, 0.1f), vec3(0.1f, 0.225f, 0.125f));
       break;
     default:
       return 0;
@@ -538,7 +538,7 @@ void Game::updateViewmodel(float dt) {
     if (t == T_HAMMER) { pitch += charge_ * 0.9f - std::sin(swing_ * PI) * 1.3f; off.z += swing_ * 0.08f; }
     if (t == T_CHISEL || t == T_WRENCH) { pitch -= swing_ * 0.6f + useAnim_ * 0.3f; off.z -= workProgress_ > 0 ? std::sin(time_ * 30) * 0.004f : 0; }
     if (t == T_TORCH || t == T_HOSE) { pitch = -1.3f; roll = 0.1f; off.y += 0.04f; off += vec3((rng().f() - 0.5f), (rng().f() - 0.5f), 0) * (useAnim_ * 0.004f); }
-    if (t == T_SCAN) { pitch = -1.0f; roll = 0.0f; off.x = 0.16f; }
+    if (t == T_SCAN) { pitch = -0.6f; roll = 0.15f; off = off + vec3(0.04f, 0.0f, -0.05f); }
     quat ql = quat::axisAngle(vec3(0, 0, 1), -roll) * quat::axisAngle(vec3(1, 0, 0), pitch);
     b->rot = qc * ql;
     b->pos = cam.pos + qc.rotate(off);
