@@ -278,7 +278,7 @@ void Sim::stepFluids(float tick) {
   }
   if (!water.empty()) {
     // Several sub-steps a tick, so water levels out at a believable pace.
-    const int SUB = 3;
+    const int SUB = 4;
     stepWater(water, tick / SUB);
     for (int s = 1; s < SUB; s++) {
       std::vector<int64_t> again;

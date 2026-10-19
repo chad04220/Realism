@@ -479,7 +479,7 @@ bool Game::selftest() {
     if (getenv("REALISM_DEBUG_WATER")) fprintf(stderr, "wall check2 %d %d %d\n", W.mat(x0 + N, y0, z0 + 1), W.mat(x0 + N, y0 + 1, z0 + 1), W.mat(x0 + N, y0 - 1, z0 + 1));
     double m0 = fillSum();
     { extern double g_wlost[10]; for (double& d : g_wlost) d = 0; }
-    for (int i = 0; i < (getenv("REALISM_DEBUG_WATER") ? 900 : 300); i++) {
+    for (int i = 0; i < (getenv("REALISM_DEBUG_WATER") ? 900 : 480); i++) {
       sim.step(1.f / 60.f);
       if (getenv("REALISM_DEBUG_WATER") && i % 60 == 59) {
         float a = 1e9f, b = -1e9f; double sd = 0; int n = 0;
@@ -533,8 +533,8 @@ bool Game::selftest() {
         for (int x = 0; x < N; x++) for (int z = 0; z < N; z++) if (W.mat(x0 + x, y0 + y, z0 + z) == WATER) { float f = W.brick(x0 + x, y0 + y, z0 + z)->fuel[lidx(x0 + x, y0 + y, z0 + z)]; f = f > 0 ? f : 1; sum += f; mx = std::max(mx, (double)f); cnt++; }
         fprintf(stderr, "  layer %d: %d cells, fill %.1f, max %.3f\n", y, cnt, sum, mx);
       }
-    fprintf(stderr, "  basin after 5 s: water %.0f -> %.0f, depth %.2f +- %.2f voxels\n", m0, m1, mean, sd);
-    check(m1 > m0 * 0.95 && m1 < m0 * 1.05 && sd < 0.25, "water surges out and levels across a basin");
+    fprintf(stderr, "  basin after 8 s: water %.0f -> %.0f, depth %.2f +- %.2f voxels\n", m0, m1, mean, sd);
+    check(m1 > m0 * 0.98 && m1 < m0 * 1.02 && sd < 0.2, "water surges out and levels across a basin");
   }
   // Radiation: a glowing block warms a plank 20 cm away across open air.
   {
