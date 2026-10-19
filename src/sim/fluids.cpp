@@ -202,7 +202,9 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
           // Over an edge or out of a hole: it leaves as a jet.
           vec3 dir((float)o.dx, 0, (float)o.dz);
           vec3 v0 = vel;
-          if (hs > 1.5f * vs) v0 = dir * std::sqrt(2 * g * (hs - 0.5f * vs));  // Torricelli
+          // Water in a hole is pushed by the tank behind it: use the highest head around.
+          float hj = std::max({hs, hEv, hWv, hNv, hSv});
+          if (hj > 1.5f * vs) v0 = dir * std::sqrt(2 * g * (hj - 0.5f * vs));  // Torricelli
           else v0 += dir * 0.3f;
           drops.push_back({cellCenter(x, y, z) + dir * (vs * 0.9f), v0 + vec3(rng().range(-.06f, .06f), rng().range(-.04f, .04f), rng().range(-.06f, .06f)), f, T});
           rem -= f; self.dm -= f;
