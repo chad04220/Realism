@@ -488,7 +488,14 @@ bool Game::selftest() {
           for (int y = 0; y < H; y++) if (W.mat(x0 + x, y0 + y, z0 + z) == WATER) { float f = W.brick(x0 + x, y0 + y, z0 + z)->fuel[lidx(x0 + x, y0 + y, z0 + z)]; hcol = y + std::min(1.f, f > 0 ? f : 1.f); }
           a = std::min(a, hcol); b = std::max(b, hcol); sd += hcol; n++;
         }
-        fprintf(stderr, "t=%.0fs surface %.2f..%.2f mean %.2f active %zu\n", (i + 1) / 60.f, a, b, sd / n, sim.fluidActive.size());
+        double q1 = 0, q2 = 0;
+        for (int x = 0; x < N; x++) for (int z = 0; z < N; z++) {
+          float hc = 0;
+          for (int y = 0; y < H; y++) if (W.mat(x0 + x, y0 + y, z0 + z) == WATER) { float f = W.brick(x0 + x, y0 + y, z0 + z)->fuel[lidx(x0 + x, y0 + y, z0 + z)]; hc += f > 0 ? f : 1; }
+          q1 += hc; q2 += hc * hc;
+        }
+        q1 /= N * N;
+        fprintf(stderr, "t=%.0fs surface %.2f..%.2f depth sd %.2f fluid %.1fms active %zu\n", (i + 1) / 60.f, a, b, std::sqrt(std::max(0.0, q2 / (N * N) - q1 * q1)), sim.stats.fluidMs, sim.fluidActive.size());
       }
       if (getenv("REALISM_DEBUG_WATER") && i % 20 == 0) { extern double g_wlost[10]; int nd = 0; for (auto& d : sim.debris) if (d.mat == WATER) nd++;
         double wt = 0; int outside = 0; W.forEach([&](int x, int y, int z, Brick* br, int l) { if (br->mat[l] == WATER) { float f = br->fuel[l] > 0 ? br->fuel[l] : 1.f; wt += f; if (x >= x0 - 2 && x <= x0 + N + 2 && z >= z0 - 2 && z <= z0 + N + 2 && (x < x0 || x >= x0 + N || z < z0 || z >= z0 + N || y < y0 || y >= y0 + H + 2)) { if (outside++ < 5) fprintf(stderr, "  out %d %d %d\n", x - x0, y - y0, z - z0); } } });
