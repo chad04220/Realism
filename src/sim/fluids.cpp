@@ -201,7 +201,13 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
     // Write back what's left. A scrap too thin to keep goes with the main flow.
     br = world.brick(x, y, z);
     if (rem < W_MIN && rem > 0 && bestF > 0) give(best.x, best.y, best.z, rem, true);
-    if (rem < W_MIN) {
+    if (rem < W_MIN && rem > 1e-5f) {
+      // Otherwise it joins any water touching it.
+      const int nb[5][3] = {{0, -1, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}};
+      for (auto& d : nb)
+        if (rem > 1e-5f && fillAt(x + d[0], y + d[1], z + d[2]) > 0) give(x + d[0], y + d[1], z + d[2], rem, true);
+    }
+    if (rem <= 1e-5f) {
       if (rem > 0) g_wlost[2] += rem;
       world.set(x, y, z, AIR);
       activate(x, y, z);
