@@ -491,6 +491,51 @@ void Renderer::drawFx(const Camera& cam, float time) {
   glDisable(GL_BLEND);
 }
 
+// The final image is composited off screen, shown with a blit, and a
+// blurred quarter-resolution copy is kept for the UI's frosted panels.
+void Renderer::ensureOutput(int w, int h) {
+  if (w == ow_ && h == oh_) return;
+  ow_ = w; oh_ = h;
+  if (ldrFbo_) {
+    glDeleteFramebuffers(1, &ldrFbo_); glDeleteTextures(1, &ldrTex_);
+    glDeleteFramebuffers(3, glassFbo_); glDeleteTextures(3, glassTex_);
+  }
+  ldrTex_ = makeTex2D(GL_RGBA8, w, h, GL_RGBA, GL_UNSIGNED_BYTE, true);
+  glGenFramebuffers(1, &ldrFbo_);
+  glBindFramebuffer(GL_FRAMEBUFFER, ldrFbo_);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ldrTex_, 0);
+  // Levels: 1/2, 1/4, then a blurred 1/4 that the UI samples.
+  int sw[3] = {std::max(4, w / 2), std::max(4, w / 4), std::max(4, w / 4)}, sh[3] = {std::max(4, h / 2), std::max(4, h / 4), std::max(4, h / 4)};
+  for (int i = 0; i < 3; i++) {
+    gw_[i] = sw[i]; gh_[i] = sh[i];
+    glassTex_[i] = makeTex2D(GL_RGBA8, sw[i], sh[i], GL_RGBA, GL_UNSIGNED_BYTE, true);
+    glGenFramebuffers(1, &glassFbo_[i]);
+    glBindFramebuffer(GL_FRAMEBUFFER, glassFbo_[i]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, glassTex_[i], 0);
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void Renderer::buildBackdrop() {
+  glDisable(GL_BLEND);
+  glBindVertexArray(vaoEmpty_);
+  blurShader_.use();
+  blurShader_.set("uSrc", 0);
+  glActiveTexture(GL_TEXTURE0);
+  GLuint src = ldrTex_;
+  int srcW = ow_, srcH = oh_;
+  for (int i = 0; i < 3; i++) {
+    glBindFramebuffer(GL_FRAMEBUFFER, glassFbo_[i]);
+    glViewport(0, 0, gw_[i], gh_[i]);
+    glBindTexture(GL_TEXTURE_2D, src);
+    blurShader_.set("uTexel", vec2(1.f / srcW, 1.f / srcH) * (i == 2 ? 1.5f : 1.f));
+    blurShader_.set("uMode", i == 2 ? 1.f : 0.f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    src = glassTex_[i]; srcW = gw_[i]; srcH = gh_[i];
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
 void Renderer::uploadAir() {
   const AirSim& a = sim_->air;
   if (!sim_->airReady || a.T.empty()) return;
@@ -709,7 +754,8 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
 
   // ---- bloom + composite
   if (opt.bloom) bloom();
-  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  ensureOutput(winW, winH);
+  glBindFramebuffer(GL_FRAMEBUFFER, ldrFbo_);
   glViewport(0, 0, winW, winH);
   glDisable(GL_DEPTH_TEST);
   compositeShader_.use();
@@ -727,6 +773,12 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
   glActiveTexture(GL_TEXTURE0 + 3); glBindTexture(GL_TEXTURE_2D, hazeTex_); compositeShader_.set("uHaze", 3);
   glBindVertexArray(vaoEmpty_);
   glDrawArrays(GL_TRIANGLES, 0, 3);
+  // Show it, then blur a copy for the UI.
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, ldrFbo_);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+  glBlitFramebuffer(0, 0, winW, winH, 0, 0, winW, winH, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  buildBackdrop();
+  glViewport(0, 0, winW, winH);
   glEndQuery(GL_TIME_ELAPSED);
   queryIdx_ ^= 1;
   if (getenv("REALISM_DEBUG_GL")) { GLenum e; while ((e = glGetError()) != 0) fprintf(stderr, "GL error 0x%x\n", e); }

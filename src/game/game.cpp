@@ -117,8 +117,11 @@ bool Game::init(const Args& args) {
   pl_.yaw = scene.spawnYaw;
   pl_.pitch = -0.12f;
   lastTime_ = plat::now();
-  toast("Welcome to Realism \xE2\x80\x94 press F1 for controls", ui::theme::accent, ui::I_GEAR);
-  toast("Everything here is built from real parts. Take it apart.", ui::theme::text);
+  title_ = !scripted_;
+  if (!title_) {
+    toast("Welcome to Realism \xE2\x80\x94 press F1 for controls", ui::theme::accent, ui::I_GEAR);
+    toast("Everything here is built from real parts. Take it apart.", ui::theme::text);
+  }
   return true;
 }
 
@@ -175,6 +178,7 @@ void Game::frame(float dt) {
   m.down = in.mdown[0]; m.pressed = in.mpressed[0]; m.released = in.mreleased[0]; m.rpressed = in.mpressed[1];
   m.wheel = in.wheel;
   m.active = !plat::captured();
+  if (title_) { titleFrame(dt); return; }
 
   // Global keys.
   if (in.pressed[key::F1]) help_ = !help_;
@@ -229,6 +233,7 @@ void Game::frame(float dt) {
   ren.extraLights.clear();
   if (flashlight_ && mode_ == M_PLAY) ren.extraLights.push_back({vec4(cam.pos + cam.forward * 0.6f + cam.right * 0.15f, 9.f), vec4(2.4f, 2.3f, 2.0f, 0)});
   ren.render(cam, ropt, hover_, time_, flash_, plat::width(), plat::height());
+  ui::setBackdrop(ren.backdropTex());
 
   ui::begin(plat::width(), plat::height(), uiScale());
   if (mode_ == M_PLAY) { if (hud_) drawHud(dt); }
@@ -1100,6 +1105,8 @@ void Game::runScriptLine(const std::string& line, bool& quit) {
     scriptIn_.mreleased[i] = true;
   } else if (cmd == "mouse") { ss >> scriptIn_.mx >> scriptIn_.my; }
   else if (cmd == "shot") { std::string p; ss >> p; frame(1.f / 60.f); saveScreenshot(p); }
+  else if (cmd == "title") { int on = 1; ss >> on; title_ = on != 0; }
+  else if (cmd == "menu") { std::string p; ss >> p; menu_ = !p.empty(); menuPage_ = p.empty() ? "main" : p; int tab = 0; ss >> tab; settingsTab_ = tab; }
   else if (cmd == "workshop") { mode_ = M_WORKSHOP; workshop->enter(); }
   else if (cmd == "play") { mode_ = M_PLAY; workshop->leave(); }
   else if (cmd == "blueprint") { std::string n; std::getline(ss, n); while (!n.empty() && n[0] == ' ') n.erase(0, 1); workshop->loadBlueprint(n); }
@@ -1121,6 +1128,41 @@ void Game::runScriptLine(const std::string& line, bool& quit) {
   } else if (cmd == "probe") {
     vec3 p; ss >> p.x >> p.y >> p.z;
     vec3 v = sim.air.velocity(p);
-    fprintf(stderr, "[probe %.2f %.2f %.2f] air T=%.1fC v=(%.2f %.2f %.2f) smoke=%.3f\n", p.x, p.y, p.z, sim.air.temperature(p), v.x, v.y, v.z, sim.air.smoke(p));
+    fprintf(stderr, "[probe %.2f %.2f %.2f] air T=%.1fC v=(%.2f %.2f %.2f) smoke=%.3f radiant=%.0f W/m2 (emitters %zu, %.0f W)\n", p.x, p.y, p.z, sim.air.temperature(p), v.x, v.y, v.z,
+            sim.air.smoke(p), sim.radiantFlux(p), sim.radiators.size(), sim.radiantTotal);
+    if (!sim.radiators.empty()) {
+      const Radiator& r = sim.radiators[0];
+      fprintf(stderr, "  strongest emitter at %.2f %.2f %.2f n %.2f %.2f %.2f %.1f W\n", r.p.x, r.p.y, r.p.z, r.n.x, r.n.y, r.n.z, r.W);
+    }
   } else if (cmd == "quit") quit = true;
+}
+
+// ----------------------------------------------------------------------- title
+
+void Game::titleFrame(float dt) {
+  plat::Input& in = scripted_ ? scriptIn_ : plat::input();
+  if (plat::captured()) plat::setCaptured(false);
+  if (in.pressed[key::F11]) plat::toggleFullscreen();
+  if (in.pressed[key::Escape] && menu_) menu_ = false;
+  // A slow orbit around the yard while the world carries on.
+  float a = time_ * 0.05f + 2.2f;
+  vec3 centre(7.4f, 1.4f, 8.4f);
+  cam.pos = centre + vec3(std::sin(a) * 10.5f, 3.6f + std::sin(time_ * 0.11f) * 0.4f, std::cos(a) * 10.5f);
+  vec3 d = centre - cam.pos;
+  cam.yaw = std::atan2(d.x, -d.z);
+  cam.pitch = std::asin(d.y / length(d));
+  cam.update((float)plat::width() / std::max(1, plat::height()));
+  sim.step(dt);
+  handleEvents();
+  audio.setListener(cam.pos, cam.right);
+  ren.extraLights.clear();
+  ren.render(cam, ropt, HoverInfo{}, time_, 0, plat::width(), plat::height());
+  ui::setBackdrop(ren.backdropTex());
+  ui::begin(plat::width(), plat::height(), uiScale());
+  drawTitle();
+  if (menu_) {
+    if (menuPage_ == "main") menu_ = false;  // the title screen is its own main menu
+    else drawMenu();
+  }
+  ui::end();
 }

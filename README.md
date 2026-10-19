@@ -192,4 +192,4 @@ This builds the world and checks that:
 
 ## Licence notes
 
-The UI font is a signed-distance-field atlas generated from DejaVu Sans (Bitstream Vera licence) by `tools/gen_font.py`. See `THIRD_PARTY_NOTICES.md`.
+The UI font is a signed-distance-field atlas generated from Inter (SIL Open Font Licence), with a few DejaVu Sans symbols, by `tools/gen_font.py`. See `THIRD_PARTY_NOTICES.md`.

@@ -16,7 +16,7 @@ std::vector<Vtx> g_v;
 std::vector<Cmd> g_cmds;
 std::vector<float> g_clipStack;  // x,y,w,h quads
 Shader g_shader;
-GLuint g_vao = 0, g_vbo = 0, g_font = 0;
+GLuint g_vao = 0, g_vbo = 0, g_font = 0, g_backdrop = 0;
 int g_w = 0, g_h = 0;
 float g_scale = 1;
 Mouse g_mouse;
@@ -44,6 +44,8 @@ const char* kFS = R"GLSL(
 #version 430 core
 in vec2 vLocal; in vec2 vHalf; in vec4 vCol; in vec4 vCol2; in vec4 vP;
 uniform sampler2D uFont;
+uniform sampler2D uBackdrop;
+uniform vec2 uScreen;
 out vec4 oColor;
 float sdRound(vec2 p, vec2 b, float r) { vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
 void main() {
@@ -55,6 +57,12 @@ void main() {
     float edge = 0.5 - vP.z;
     float a = smoothstep(edge - w, edge + w, d);
     c = vec4(vCol.rgb, vCol.a * a);
+  } else if (type == 6) {
+    // Horizontal gradient, square corners: a soft shade across the screen.
+    vec4 base = mix(vCol, vCol2, clamp(vLocal.x / max(vHalf.x, 1.0) * 0.5 + 0.5, 0.0, 1.0));
+    float t = clamp(vLocal.x / max(vHalf.x, 1.0) * 0.5 + 0.5, 0.0, 1.0);
+    base.a = mix(vCol.a, vCol2.a, t * t * (3.0 - 2.0 * t));
+    c = base;
   } else if (type == 0 || type == 3) {
     float d = sdRound(vLocal, vHalf, vP.y);
     float aa = max(fwidth(d), 0.6);
@@ -66,6 +74,23 @@ void main() {
       base = mix(base, vCol2, inner);
     }
     c = vec4(base.rgb, base.a * fill);
+  } else if (type == 5) {
+    // Frosted glass: the blurred frame behind, darkened and tinted, with a
+    // faint sheen at the top and a hairline border.
+    float d = sdRound(vLocal, vHalf, vP.y);
+    float aa = max(fwidth(d), 0.6);
+    float fill = 1.0 - smoothstep(-aa, aa, d);
+    vec3 back = texture(uBackdrop, gl_FragCoord.xy / uScreen).rgb;
+    float l = dot(back, vec3(0.299, 0.587, 0.114));
+    back = mix(vec3(l), back, 0.75);
+    vec3 base = mix(back * 0.55, vCol.rgb, vCol.a * 0.72);
+    float top = clamp(vLocal.y / max(vHalf.y, 1.0) * 0.5 + 0.5, 0.0, 1.0);
+    base += vec3(0.045) * (1.0 - smoothstep(0.0, 0.35, top));
+    if (vP.z > 0.0) {
+      float inner = smoothstep(-vP.z - aa, -vP.z + aa, d);
+      base = mix(base, vCol2.rgb, inner * vCol2.a);
+    }
+    c = vec4(base, fill * min(1.0, vCol.a + 0.12));
   } else if (type == 2) {
     float d = sdRound(vLocal, vHalf, vP.y);
     float a = 1.0 - smoothstep(-vP.w, vP.w, d);
@@ -205,6 +230,10 @@ void end() {
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, g_font);
   g_shader.set("uFont", 0);
+  glActiveTexture(GL_TEXTURE0 + 1);
+  glBindTexture(GL_TEXTURE_2D, g_backdrop);
+  g_shader.set("uBackdrop", 1);
+  glActiveTexture(GL_TEXTURE0);
   glBindVertexArray(g_vao);
   glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
   glBufferData(GL_ARRAY_BUFFER, g_v.size() * sizeof(Vtx), g_v.data(), GL_STREAM_DRAW);
@@ -236,7 +265,17 @@ void rect(float x, float y, float w, float h, Color c, float radius) {
   quad(x - pad, y - pad, w + 2 * pad, h + 2 * pad, p, -w * 0.5f - pad, -h * 0.5f - pad, w * 0.5f + pad, h * 0.5f + pad);
 }
 
+void setBackdrop(unsigned tex) { g_backdrop = tex; }
+
+void glass(float x, float y, float w, float h, Color tint, Color border, float radius, float bw) {
+  float pad = 1;
+  Vtx p = proto(tint, border, g_backdrop ? 5.f : 0.f, std::min(radius, std::min(w, h) * 0.5f), bw, 0, w * 0.5f, h * 0.5f);
+  quad(x - pad, y - pad, w + 2 * pad, h + 2 * pad, p, -w * 0.5f - pad, -h * 0.5f - pad, w * 0.5f + pad, h * 0.5f + pad);
+}
+
 void rectBorder(float x, float y, float w, float h, Color fill, Color border, float radius, float bw) {
+  // Dark, nearly opaque panels are drawn as frosted glass.
+  if (g_backdrop && fill.a >= 0.75f && std::max(fill.r, std::max(fill.g, fill.b)) < 0.2f) { glass(x, y, w, h, fill, border, radius, bw); return; }
   float pad = 1;
   // The shader mixes from the fill (col) to the border (col2) in the edge band.
   Vtx p = proto(fill, border, 0, std::min(radius, std::min(w, h) * 0.5f), bw, 0, w * 0.5f, h * 0.5f);
@@ -247,6 +286,11 @@ void gradient(float x, float y, float w, float h, Color top, Color bottom, float
   float pad = 1;
   Vtx p = proto(top, bottom, 3, std::min(radius, std::min(w, h) * 0.5f), 0, 0, w * 0.5f, h * 0.5f);
   quad(x - pad, y - pad, w + 2 * pad, h + 2 * pad, p, -w * 0.5f - pad, -h * 0.5f - pad, w * 0.5f + pad, h * 0.5f + pad);
+}
+
+void gradientH(float x, float y, float w, float h, Color left, Color right) {
+  Vtx p = proto(left, right, 6, 0, 0, 0, w * 0.5f, h * 0.5f);
+  quad(x, y, w, h, p, -w * 0.5f, -h * 0.5f, w * 0.5f, h * 0.5f);
 }
 
 void shadow(float x, float y, float w, float h, float radius, float spread, float alpha) {
@@ -346,7 +390,8 @@ bool button(const char* label, float x, float y, float w, float h, bool primary,
   Color fill = primary ? theme::accent.alpha(hv ? 1.f : 0.88f) : (hv ? Color(1, 1, 1, 0.12f) : Color(1, 1, 1, 0.06f));
   if (!enabled) fill = Color(1, 1, 1, 0.03f);
   if (hv && g_mouse.down) fill = primary ? theme::accent.mix(Color(1, 1, 1), 0.2f) : Color(1, 1, 1, 0.18f);
-  rectBorder(x, y, w, h, fill, primary ? Color(0, 0, 0, 0) : theme::line, 8 * s);
+  if (primary || !enabled) rectBorder(x, y, w, h, fill, primary ? Color(0, 0, 0, 0) : theme::line, 8 * s);
+  else glass(x, y, w, h, hv ? Color::hex(g_mouse.down ? 0x3a4454 : 0x2a3240, 0.86f) : theme::panel, hv ? theme::accent.alpha(0.5f) : theme::line, 8 * s);
   Color tc = primary ? Color::hex(0x0b1a19) : (enabled ? theme::text : theme::faint);
   text(x + w * 0.5f, y + h * 0.5f - 9 * s, label, 16 * s, tc, 1, primary ? 0.05f : 0);
   return hv && g_mouse.released && enabled;

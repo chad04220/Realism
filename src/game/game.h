@@ -79,6 +79,11 @@ class Game {
   void drawHotbar();
   void drawToasts(float dt);
   void drawStats();
+  void titleFrame(float dt);
+  void drawTitle();
+  void drawEnvironment(float x, float y);
+  void drawHeatVignette();
+  void drawPrompt(float cx, float cy);
   void resetWorld();
   void saveScreenshot(const std::string& path);
   void runScriptLine(const std::string& line, bool& quit);
@@ -100,6 +105,12 @@ class Game {
   float toolAnim_ = 0, hotbarAnim_ = 0;
   bool menu_ = false, help_ = false, hud_ = true, stats_ = false, flashlight_ = false;
   bool paused_ = false;
+  // Title screen and what the player feels.
+  bool title_ = false;
+  int settingsTab_ = 0;
+  float radiant_ = 0, airHere_ = AMBIENT, warmth_ = 0;
+  vec3 windHere_;
+  int envTick_ = 0;
   // Hammer.
   float charge_ = 0, cooldown_ = 0, swing_ = 0;
   // Grab.

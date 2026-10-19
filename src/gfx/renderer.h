@@ -36,6 +36,7 @@ class Renderer {
   void render(const Camera& cam, const RenderOptions& opt, const HoverInfo& hover, float time, float flash, int winW, int winH);
   void uploadAllWorld();
   float gpuMs() const { return gpuMs_; }
+  GLuint backdropTex() const { return glassTex_[2]; }  // blurred frame, for frosted-glass UI
   size_t vramBytes() const { return vram_; }
   int bodiesDrawn = 0;
   float groundY = 1.0f;
@@ -69,6 +70,11 @@ class Renderer {
   std::vector<uint8_t> airCpu_;
   GLuint volFbo_ = 0, volTex_ = 0, hazeTex_ = 0;
   int vw_ = 0, vh_ = 0;
+  GLuint ldrFbo_ = 0, ldrTex_ = 0;
+  GLuint glassFbo_[3] = {0, 0, 0}, glassTex_[3] = {0, 0, 0};
+  int gw_[3] = {0, 0, 0}, gh_[3] = {0, 0, 0}, ow_ = 0, oh_ = 0;
+  void ensureOutput(int w, int h);
+  void buildBackdrop();
   void uploadAir();
   void drawVolumes(const Camera& cam, float time);
   GLuint worldData_ = 0, worldDens_ = 0, worldBricks_ = 0, dynOcc_ = 0;

@@ -18,8 +18,8 @@ struct Color {
 };
 
 namespace theme {
-inline const Color panel = Color::hex(0x12151c, 0.84f);
-inline const Color panelHi = Color::hex(0x1b2029, 0.92f);
+inline const Color panel = Color::hex(0x10141b, 0.80f);
+inline const Color panelHi = Color::hex(0x161b24, 0.88f);
 inline const Color line = Color(1, 1, 1, 0.08f);
 inline const Color text = Color::hex(0xe8ecf1);
 inline const Color dim = Color::hex(0x9aa4b2);
@@ -42,6 +42,7 @@ int height();
 void rect(float x, float y, float w, float h, Color c, float radius = 0);
 void rectBorder(float x, float y, float w, float h, Color fill, Color border, float radius, float borderW = 1);
 void gradient(float x, float y, float w, float h, Color top, Color bottom, float radius = 0);
+void gradientH(float x, float y, float w, float h, Color left, Color right);
 void shadow(float x, float y, float w, float h, float radius, float spread, float alpha);
 void circle(float cx, float cy, float r, Color c);
 void ring(float cx, float cy, float r, float thick, Color c);
@@ -52,6 +53,9 @@ float text(float x, float y, const std::string& s, float size, Color c, int alig
 float textWidth(const std::string& s, float size);
 // Word-wrapped text; returns height used.
 float textWrapped(float x, float y, float w, const std::string& s, float size, Color c, float lineGap = 1.25f);
+// Frosted-glass panel over the blurred frame (falls back to a flat panel).
+void glass(float x, float y, float w, float h, Color tint, Color border, float radius, float borderW = 1);
+void setBackdrop(unsigned glTexture);
 void pushClip(float x, float y, float w, float h);
 void popClip();
 

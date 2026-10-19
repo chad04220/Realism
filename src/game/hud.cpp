@@ -136,15 +136,7 @@ void Game::drawTargetCard(float x, float y) {
     snprintf(b, sizeof b, "%.1f m", hit_.t);
     row("Distance", b, theme::dim);
   }
-  // Action hint.
-  std::string act;
-  if (cp) {
-    if (cp->type == C_SWITCH) act = "E  flip switch";
-    else if (cp->type == C_MOTOR) act = "E  reverse motor";
-    else if (cp->type == C_CHARGE) act = "E  light the fuse";
-    else if (cp->type == C_ROCKET) act = "E  ignite";
-    else if (cp->type == C_BATTERY) act = "E  check charge";
-  }
+  std::string act;  // shown as a prompt under the crosshair instead
   float rowH = 21 * s;
   float h = 62 * s + lines.size() * rowH + (act.empty() ? 0 : 30 * s) + (deep && M.info[0] ? 50 * s : 0);
   shadow(x, y, w, h, 12 * s, 14 * s, 0.4f);
@@ -168,6 +160,16 @@ void Game::drawTargetCard(float x, float y) {
 
 void Game::drawHud(float dt) {
   float s = scale();
+  // What the player feels: air temperature, wind and radiant heat at head height.
+  if ((envTick_++ % 6) == 0 && sim.airReady) {
+    airHere_ = sim.air.temperature(cam.pos);
+    windHere_ = sim.air.velocity(cam.pos);
+    radiant_ = sim.radiantFlux(cam.pos);
+  }
+  float want = clampf((radiant_ - 300.f) / 3000.f, 0.f, 1.f) + clampf((airHere_ - 38.f) / 90.f, 0.f, 1.f);
+  warmth_ += (std::min(1.f, want) - warmth_) * std::min(1.f, dt * 3.f);
+  drawHeatVignette();
+  drawEnvironment(width() - 252 * s, 18 * s);
   float cx = width() * 0.5f, cy = height() * 0.5f;
   // Crosshair: a dot, with a ring that fills as the hammer charges or the wrench works.
   bool target = hit_.hit;
@@ -184,6 +186,7 @@ void Game::drawHud(float dt) {
     // Tiny label under the crosshair.
     text(cx, cy + 18 * s, comp(hover_.comp).name, 14 * s, theme::text.alpha(0.8f), 1);
   }
+  drawPrompt(cx, cy + 42 * s);
   if (target && (tool_ == T_SCAN || hover_.comp || hit_.body >= 0)) drawTargetCard(width() - 360 * s, std::max(height() * 0.5f - 60 * s, 270 * s));
 
   drawHotbar();
@@ -217,7 +220,7 @@ void Game::drawHud(float dt) {
 
 void Game::drawToasts(float dt) {
   float s = scale();
-  float y = (mode_ == M_WORKSHOP ? 552.f : 18.f) * s;
+  float y = (mode_ == M_WORKSHOP ? 552.f : (hud_ ? (radiant_ > 150 ? 112.f : 88.f) : 18.f)) * s;
   for (auto it = toasts_.begin(); it != toasts_.end();) {
     Toast& t = *it;
     t.age += dt;
@@ -296,50 +299,96 @@ void Game::drawHelp() {
 
 void Game::drawMenu() {
   float s = scale();
-  rect(0, 0, (float)width(), (float)height(), Color(0.02f, 0.03f, 0.05f, 0.6f));
-  float w = 440 * s, h = menuPage_ == "settings" ? 700 * s : 470 * s;
-  float x = width() * 0.5f - w * 0.5f, y = height() * 0.5f - h * 0.5f;
-  shadow(x, y, w, h, 18 * s, 30 * s, 0.6f);
-  rectBorder(x, y, w, h, theme::panelHi, theme::line, 18 * s);
-  float bx = x + 40 * s, bw = w - 80 * s, bh = 46 * s;
+  float W = (float)width(), H = (float)height();
   if (menuPage_ == "main") {
-    text(x + w * 0.5f, y + 32 * s, "REALISM", 34 * s, theme::text, 1, 0.08f);
-    text(x + w * 0.5f, y + 76 * s, "voxel physics sandbox", 14 * s, theme::faint, 1);
-    float yy = y + 120 * s;
-    if (button("Resume", bx, yy, bw, bh, true)) menu_ = false;
-    yy += bh + 12 * s;
-    if (button("Settings", bx, yy, bw, bh)) menuPage_ = "settings";
-    yy += bh + 12 * s;
-    if (button("Controls", bx, yy, bw, bh)) { help_ = true; menu_ = false; }
-    yy += bh + 12 * s;
-    if (button("Reset world", bx, yy, bw, bh)) { menu_ = false; resetWorld(); }
-    yy += bh + 12 * s;
-    if (button("Quit", bx, yy, bw, bh)) quit_ = true;
-  } else {
-    text(x + 40 * s, y + 28 * s, "Settings", 26 * s, theme::text, 0, 0.06f);
-    float yy = y + 80 * s;
+    // Pause: the same left-hand column as the title screen.
+    rect(0, 0, W, H, Color(0.02f, 0.03f, 0.05f, 0.25f));
+    gradientH(0, 0, W * 0.55f, H, Color(0.02f, 0.03f, 0.05f, 0.62f), Color(0.02f, 0.03f, 0.05f, 0.f));
+    float x = std::max(48 * s, W * 0.07f), y = H * 0.26f;
+    text(x + 2 * s, y, "PAUSED", 13 * s, theme::accent, 0, 0.12f);
+    text(x - 2 * s, y + 20 * s, "REALISM", 56 * s, theme::text, 0, 0.1f);
+    float yy = y + 110 * s, bw = 300 * s, bh = 48 * s;
+    if (button("Resume", x, yy, bw, bh, true)) menu_ = false;
+    yy += bh + 10 * s;
+    if (button("Settings", x, yy, bw, bh)) menuPage_ = "settings";
+    yy += bh + 10 * s;
+    if (button("Controls", x, yy, bw, bh)) { help_ = true; menu_ = false; }
+    yy += bh + 10 * s;
+    if (button("Reset world", x, yy, bw, bh)) { menu_ = false; resetWorld(); }
+    yy += bh + 10 * s;
+    if (button("Title screen", x, yy, bw, bh)) { menu_ = false; mode_ = M_PLAY; title_ = true; }
+    yy += bh + 10 * s;
+    if (button("Quit", x, yy, bw, bh)) quit_ = true;
+    return;
+  }
+  // Settings: a glass sheet with tabs.
+  rect(0, 0, W, H, Color(0.02f, 0.03f, 0.05f, 0.45f));
+  float w = 700 * s, h = 600 * s, x = W * 0.5f - w * 0.5f, y = H * 0.5f - h * 0.5f;
+  shadow(x, y, w, h, 20 * s, 34 * s, 0.55f);
+  glass(x, y, w, h, theme::panelHi, theme::line, 20 * s);
+  text(x + 36 * s, y + 28 * s, "Settings", 28 * s, theme::text, 0, 0.06f);
+  static const char* tabs[] = {"Graphics", "Simulation", "Controls", "Audio"};
+  float tx = x + 36 * s, ty = y + 80 * s;
+  for (int i = 0; i < 4; i++) {
+    float tw = textWidth(tabs[i], 15 * s) + 32 * s;
+    bool sel = settingsTab_ == i;
+    bool hv = hover(tx, ty, tw, 34 * s);
+    if (hv) claimMouse();
+    rect(tx, ty, tw, 34 * s, sel ? theme::accent.alpha(0.16f) : (hv ? Color(1, 1, 1, 0.07f) : Color(0, 0, 0, 0)), 17 * s);
+    text(tx + tw * 0.5f, ty + 8 * s, tabs[i], 15 * s, sel ? theme::accent : theme::dim, 1, sel ? 0.05f : 0);
+    if (hv && mouse().released) settingsTab_ = i;
+    tx += tw + 6 * s;
+  }
+  line(x + 36 * s, ty + 46 * s, x + w - 36 * s, ty + 46 * s, 1, theme::line);
+  float bx = x + 36 * s, bw = w - 72 * s, yy = ty + 66 * s;
+  auto note = [&](const char* t) { text(bx, yy, t, 13 * s, theme::faint); yy += 26 * s; };
+  if (settingsTab_ == 0) {
     if (toggle("Smooth surfaces", bx, yy, bw, ropt.smooth)) settings.smooth = ropt.smooth;
-    yy += 40 * s;
+    yy += 38 * s;
     if (toggle("Sun shadows", bx, yy, bw, ropt.shadows)) settings.shadows = ropt.shadows;
-    yy += 40 * s;
+    yy += 38 * s;
     if (toggle("Bloom", bx, yy, bw, ropt.bloom)) settings.bloom = ropt.bloom;
-    yy += 40 * s;
-    if (toggle("Volumetric smoke & heat haze", bx, yy, bw, ropt.volumetrics)) settings.volumetrics = ropt.volumetrics;
+    yy += 38 * s;
+    if (toggle("Volumetric smoke, steam and heat haze", bx, yy, bw, ropt.volumetrics)) settings.volumetrics = ropt.volumetrics;
     yy += 46 * s;
     if (slider("Render scale", bx, yy, bw, ropt.renderScale, 0.4f, 1.5f, "%.2f\xC3\x97")) settings.renderScale = ropt.renderScale;
-    yy += 54 * s;
+    yy += 52 * s;
+    if (slider("Exposure", bx, yy, bw, ropt.exposure, 0.5f, 2.f, "%.2f")) settings.exposure = ropt.exposure;
+    yy += 52 * s;
     float fovDeg = cam.fov * 180 / PI;
     if (slider("Field of view", bx, yy, bw, fovDeg, 55, 100, "%.0f\xC2\xB0")) { cam.fov = fovDeg * PI / 180; settings.fov = fovDeg; }
-    yy += 54 * s;
-    slider("Mouse sensitivity", bx, yy, bw, settings.sensitivity, 0.2f, 3.f, "%.2f");
-    yy += 54 * s;
+    yy += 56 * s;
+    note("Lower the render scale for more frame rate (0.75 suits most laptops).");
+  } else if (settingsTab_ == 1) {
     if (slider("Thermal time warp", bx, yy, bw, sim.cfg.thermalWarp, 1, 60, "%.0f\xC3\x97")) settings.thermalWarp = sim.cfg.thermalWarp;
-    yy += 54 * s;
-    if (slider("Volume", bx, yy, bw, settings.volume, 0, 1, "%.2f")) audio.setVolume(settings.volume);
-    yy += 54 * s;
-    text(bx, yy, "Voxel size and world extent: edit settings.cfg", 13 * s, theme::faint);
-    yy += 30 * s;
-    if (button("Back", bx, yy, bw, bh, true)) { menuPage_ = "main"; settings.save(plat::userDataDir() + "/settings.cfg"); }
+    yy += 52 * s;
+    float wind = length(sim.air.wind);
+    if (slider("Breeze", bx, yy, bw, wind, 0, 6, "%.1f m/s")) {
+      vec3 dir = length(sim.air.wind) > 1e-3f ? normalize(sim.air.wind) : vec3(0.93f, 0, 0.36f);
+      sim.air.wind = dir * wind;
+    }
+    yy += 56 * s;
+    note("Heat runs faster than real time so fires and furnaces play out in seconds;");
+    note("everything else, including air and water, runs in real time.");
+    yy += 8 * s;
+    note("Voxel size and world extent are set in settings.cfg (restart to apply).");
+  } else if (settingsTab_ == 2) {
+    slider("Mouse sensitivity", bx, yy, bw, settings.sensitivity, 0.2f, 3.f, "%.2f");
+    yy += 52 * s;
+    toggle("Invert mouse Y", bx, yy, bw, settings.invertY);
+    yy += 46 * s;
+    if (slider("Interface scale", bx, yy, bw, settings.uiScale, 0.75f, 1.5f, "%.2f\xC3\x97")) {}
+    yy += 56 * s;
+    note("F1 shows every control.");
+  } else {
+    if (slider("Master volume", bx, yy, bw, settings.volume, 0, 1, "%.2f")) audio.setVolume(settings.volume);
+    yy += 56 * s;
+  }
+  float bh = 46 * s;
+  if (button(title_ ? "Back to title" : "Back", x + w - 36 * s - 200 * s, y + h - 36 * s - bh, 200 * s, bh, true)) {
+    menuPage_ = "main";
+    if (title_) menu_ = false;
+    settings.save(plat::userDataDir() + "/settings.cfg");
   }
 }
 
@@ -517,4 +566,122 @@ bool Game::selftest() {
   }
   fprintf(stderr, "%d failure(s)\n", fails);
   return fails == 0;
+}
+
+// A key cap and what it does, under the crosshair, for things you can use.
+void Game::drawPrompt(float cx, float cy) {
+  if (!hit_.hit || hit_.t > 4.f || !hover_.comp) return;
+  const Component& cp = comp(hover_.comp);
+  const char* act = nullptr;
+  switch (cp.type) {
+    case C_SWITCH: act = "Flip switch"; break;
+    case C_MOTOR: act = "Reverse motor"; break;
+    case C_CHARGE: act = cp.fuse >= 0 ? nullptr : "Light the fuse"; break;
+    case C_ROCKET: act = cp.lit ? nullptr : "Ignite"; break;
+    case C_BATTERY: act = "Check charge"; break;
+    default: break;
+  }
+  if (!act) return;
+  float s = scale();
+  float tw = textWidth(act, 15 * s);
+  float k = 26 * s, w = k + 10 * s + tw + 18 * s, x = cx - w * 0.5f;
+  glass(x, cy, w, 34 * s, theme::panel, theme::line, 17 * s);
+  rectBorder(x + 5 * s, cy + 4 * s, k, k, Color(1, 1, 1, 0.92f), Color(1, 1, 1, 0.92f), 7 * s);
+  text(x + 5 * s + k * 0.5f, cy + 8 * s, "E", 15 * s, Color::hex(0x10141b), 1, 0.12f);
+  text(x + k + 14 * s, cy + 8 * s, act, 15 * s, theme::text);
+}
+
+// Top right: air temperature, a wind compass relative to where you look, and
+// radiant heat when something hot is shining on you.
+void Game::drawEnvironment(float x, float y) {
+  float s = scale();
+  float w = 234 * s, h = (radiant_ > 150 ? 86.f : 62.f) * s;
+  shadow(x, y, w, h, 14 * s, 14 * s, 0.3f);
+  glass(x, y, w, h, theme::panel, theme::line, 14 * s);
+  // Temperature.
+  icon(I_THERMO, x + 22 * s, y + 31 * s, 22 * s, tempColor(airHere_));
+  char b[48];
+  snprintf(b, sizeof b, "%.0f\xC2\xB0", airHere_);
+  text(x + 40 * s, y + 10 * s, b, 26 * s, theme::text, 0, 0.05f);
+  text(x + 41 * s, y + 41 * s, "AIR", 11 * s, theme::faint, 0, 0.08f);
+  // Wind compass.
+  float ccx = x + 140 * s, ccy = y + 31 * s, r = 19 * s;
+  ring(ccx, ccy, r, 1.5f * s, Color(1, 1, 1, 0.18f));
+  for (int i = 0; i < 4; i++) {
+    float aa = i * PI * 0.5f;
+    line(ccx + std::sin(aa) * (r - 4 * s), ccy - std::cos(aa) * (r - 4 * s), ccx + std::sin(aa) * r, ccy - std::cos(aa) * r, 1.5f * s, Color(1, 1, 1, 0.25f));
+  }
+  vec3 fw = normalize(vec3(cam.forward.x, 0, cam.forward.z) + vec3(1e-5f, 0, 0)), rt = normalize(vec3(cam.right.x, 0, cam.right.z) + vec3(1e-5f, 0, 0));
+  float wx = dot(windHere_, rt), wz = dot(windHere_, fw);
+  float spd = std::sqrt(wx * wx + wz * wz);
+  if (spd > 0.05f) {
+    // The arrow points where the wind is going: up = away from you.
+    float ux = wx / spd, uy = -wz / spd;
+    float L = r - 5 * s;
+    vec2 tip(ccx + ux * L, ccy + uy * L), tail(ccx - ux * L * 0.7f, ccy - uy * L * 0.7f);
+    line(tail.x, tail.y, tip.x, tip.y, 2.5f * s, theme::accent);
+    float hx = -uy, hy = ux;
+    line(tip.x, tip.y, tip.x - ux * 7 * s + hx * 5 * s, tip.y - uy * 7 * s + hy * 5 * s, 2.5f * s, theme::accent);
+    line(tip.x, tip.y, tip.x - ux * 7 * s - hx * 5 * s, tip.y - uy * 7 * s - hy * 5 * s, 2.5f * s, theme::accent);
+  } else circle(ccx, ccy, 3 * s, theme::accent);
+  snprintf(b, sizeof b, "%.1f", spd);
+  text(x + 170 * s, y + 13 * s, b, 18 * s, theme::text, 0, 0.04f);
+  text(x + 170 * s, y + 36 * s, "WIND M/S", 11 * s, theme::faint, 0, 0.08f);
+  if (radiant_ > 150) {
+    line(x + 14 * s, y + 62 * s, x + w - 14 * s, y + 62 * s, 1, theme::line);
+    if (radiant_ >= 1000) snprintf(b, sizeof b, "Radiant heat  %.1f kW/m\xC2\xB2", radiant_ / 1000.f);
+    else snprintf(b, sizeof b, "Radiant heat  %.0f W/m\xC2\xB2", radiant_);
+    icon(I_FLAME, x + 22 * s, y + 74 * s, 14 * s, theme::warm);
+    text(x + 36 * s, y + 66 * s, b, 13 * s, radiant_ > 4000 ? theme::danger : theme::warm);
+  }
+}
+
+// The screen edges glow and pulse when radiant heat or hot air is on you.
+void Game::drawHeatVignette() {
+  if (warmth_ < 0.01f) return;
+  float s = scale();
+  float k = warmth_ * (0.85f + 0.15f * std::sin(time_ * 6.f));
+  Color hot = Color::hex(0xff6a1a, 0.42f * k), none = Color::hex(0xff6a1a, 0.f);
+  float W = (float)width(), H = (float)height(), e = std::min(W, H) * 0.22f;
+  gradient(0, 0, W, e, hot, none);
+  gradient(0, H - e, W, e, none, hot);
+  gradientH(0, 0, e, H, hot, none);
+  gradientH(W - e, 0, e, H, none, hot);
+  (void)s;
+}
+
+// The title screen: the live yard behind, the name and a column of choices.
+void Game::drawTitle() {
+  float s = scale();
+  float W = (float)width(), H = (float)height();
+  // Darken the left side so the column reads over the scene.
+  gradientH(0, 0, W * 0.62f, H, Color(0.02f, 0.03f, 0.05f, 0.66f), Color(0.02f, 0.03f, 0.05f, 0.f));
+  gradient(0, H * 0.7f, W, H * 0.3f, Color(0, 0, 0, 0), Color(0.02f, 0.03f, 0.05f, 0.55f));
+  float x = std::max(48 * s, W * 0.07f), y = H * 0.24f;
+  text(x + 2 * s, y, "A VOXEL PHYSICS SANDBOX", 13 * s, theme::accent, 0, 0.12f);
+  text(x - 4 * s, y + 22 * s, "REALISM", 96 * s, theme::text, 0, 0.1f);
+  rect(x, y + 140 * s, 64 * s, 3 * s, theme::accent, 1.5f * s);
+  textWrapped(x, y + 160 * s, 440 * s,
+              "Every object is built from the parts that make it work, and every part from a real material. "
+              "Heat, air, water, current and motion move between them.",
+              16 * s, theme::dim, 1.4f);
+  float by = y + 250 * s, bw = 300 * s, bh = 50 * s;
+  if (button("Play", x, by, bw, bh, true)) {
+    title_ = false;
+    toast("Welcome to Realism \xE2\x80\x94 press F1 for controls", theme::accent, I_GEAR);
+    toast("Everything here is built from real parts. Take it apart.", theme::text);
+    audio.playUi(SFX_UI);
+  }
+  by += bh + 12 * s;
+  if (button("Assembly workshop", x, by, bw, bh)) { title_ = false; mode_ = M_WORKSHOP; workshop->enter(); audio.playUi(SFX_UI); }
+  by += bh + 12 * s;
+  if (button("Settings", x, by, bw, bh)) { menu_ = true; menuPage_ = "settings"; }
+  by += bh + 12 * s;
+  if (button("Quit", x, by, bw, bh)) quit_ = true;
+  // Live readout of the world behind.
+  char b[160];
+  snprintf(b, sizeof b, "%.1f cm voxels  \xC2\xB7  %zu M voxels  \xC2\xB7  %d burning  \xC2\xB7  breeze %.1f m/s", sim.vs * 100,
+           sim.world.countSolid() / 1000000, sim.stats.burning, length(sim.air.wind) * (1 + sim.air.gust));
+  text(x, H - 46 * s, b, 13 * s, theme::faint);
+  text(W - 28 * s, H - 46 * s, "F11 fullscreen", 13 * s, theme::faint, 2);
 }

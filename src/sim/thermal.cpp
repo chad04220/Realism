@@ -477,7 +477,7 @@ void Sim::radiate(float dt) {
     vec3 t = std::fabs(r.n.y) < 0.9f ? normalize(cross(r.n, vec3(0, 1, 0))) : normalize(cross(r.n, vec3(1, 0, 0)));
     vec3 b = cross(r.n, t);
     vec3 d = normalize(t * (rr * std::cos(phi)) + b * (rr * std::sin(phi)) + r.n * std::sqrt(std::max(0.f, 1 - u1)));
-    rs[k] = {r.p + r.n * (vs * 0.8f), d, r.body};
+    rs[k] = {r.p + r.n * (vs * 1.8f), d, r.body};
   }
   std::vector<Hit> hitv(rays);
   Jobs::get().parallelFor(rays, 16, [&](int k0, int k1, int) {
@@ -487,7 +487,7 @@ void Sim::radiate(float dt) {
   for (int k = 0; k < rays; k++) {
     const Hit& h = hitv[k];
     if (!h.hit) continue;
-    if (h.body >= 0 && bodies[h.body]->id == rs[k].body && h.t < vs * 1.5f) continue;
+    if (h.body >= 0 && bodies[h.body]->id == rs[k].body && h.t < vs * 0.5f) continue;
     hits.push_back({h, Eray});
   }
   for (auto& [h, E] : hits) {
@@ -517,7 +517,7 @@ float Sim::radiantFlux(const vec3& p) const {
     float dist = std::sqrt(d2);
     float c = dot(r.n, d) / dist;
     if (c <= 0) continue;
-    Hit h = raycast(r.p + r.n * (vs * 0.8f), d / dist, dist - 0.1f);
+    Hit h = raycast(r.p + r.n * (vs * 1.8f), d / dist, dist - 0.1f);
     if (h.hit) continue;
     F += r.W * c / (PI * d2);
   }
