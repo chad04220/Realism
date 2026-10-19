@@ -171,7 +171,7 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
         // surface difference and the pond would slosh forever.
         bool handledAbove = o.nf > 0 && fillAt(x, y + 1, z) > 0 && fillAt(x + o.dx, y + 1, z + o.dz) > 0;
         // A small dead band lets level water come to rest.
-        o.f = (o.nf < 0 || handledAbove) ? 0 : std::clamp((hs - o.h) / vs - 0.02f, 0.f, 1.f) * 0.24f;
+        o.f = (o.nf < 0 || handledAbove) ? 0 : std::clamp((hs - o.h) / vs - 0.002f, 0.f, 1.f) * 0.24f;
         sum += o.f;
       }
       float avail = std::min(rem, 1.f);
@@ -180,7 +180,7 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
       for (int i = 0; i < 4; i++) {
         Out& o = outs[(i + r0) & 3];
         float f = o.f * scale;
-        if (f < 0.003f) continue;
+        if (f < 0.0003f) continue;
         int nx_ = x + o.dx, nz_ = z + o.dz;
         if (o.nf == 0 && f >= 0.03f && fillAt(nx_, y - 1, nz_) == 0 && fillAt(nx_, y - 2, nz_) == 0) {
           // Over an edge or out of a hole: it leaves as a jet, pushed by the
@@ -218,7 +218,7 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
       continue;
     }
     storeFill(br, l, x, y, z, f0, rem);
-    if (f0 - rem > 1e-3f) { fluidActive.insert(k); activate(x, y, z); g_wlost[9] += 1; }
+    if (f0 - rem > 2e-4f) { fluidActive.insert(k); activate(x, y, z); g_wlost[9] += 1; }
   }
   if (getenv("REALISM_DEBUG_WATER")) {
     static int pn = 0;
