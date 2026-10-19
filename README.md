@@ -30,6 +30,16 @@ The world uses **2.5 cm voxels** (64 voxels per litre). It is about 16 m × 16 m
 - Exposed faces lose heat by convection and radiation, so hot metal glows and cools.
 - Touching bodies exchange heat, and sliding friction warms both surfaces.
 
+**Air**
+- The whole world's air is simulated as a fluid on a 20 cm grid: velocity, temperature, smoke and steam.
+- Hot air rises, flows around walls and through doorways, and a gusty breeze blows in from the open sides.
+- Fans and propellers push real airflow, rockets blast exhaust, and explosions send out a pressure wave.
+- Surfaces trade heat with the air touching them, so a fire's plume heats whatever it drifts over, and wind cools hot metal faster.
+
+**Thermal radiation**
+- Hot surfaces and flames radiate heat across open air to whatever they can see, not just what they touch.
+- A glowing ingot scorches the bench it hangs over; polished metal reflects most of what reaches it.
+
 **Fire**
 - Flammable materials ignite at their real ignition temperatures.
 - Fire needs an exposed face for oxygen, burns through its fuel, releases heat, and leaves ash.
@@ -39,7 +49,13 @@ The world uses **2.5 cm voxels** (64 voxels per litre). It is about 16 m × 16 m
 - Metals, glass and plastics melt into glowing liquid that flows and freezes back.
 - Sand fuses into glass and water boils off.
 
-**Fluids** — water, molten material, sand, ash and gravel flow and slump on the grid. Bodies float or sink by buoyancy.
+**Water**
+- Each water voxel holds a fill level, rendered as a smooth surface at that height.
+- Pressure is the depth of standing water: puddles spread and level out, and connected water finds one level.
+- Water falling over an edge becomes droplets that splash back in; a hole low in a tank squirts at Torricelli's speed, √(2gh).
+- Currents carry floating things along. Bodies float or sink by buoyancy.
+
+**Other fluids** — molten material, sand, ash and gravel flow and slump on the grid.
 
 **Circuits**
 - Current flows through copper, battery terminals and closed switches.
@@ -167,7 +183,10 @@ This builds the world and checks that:
 - the rover drives when switched on;
 - a hammer blow knocks a brick out of the shed wall;
 - explosions remove material;
-- the torch can bring steel to a glow.
+- the torch can bring steel to a glow;
+- the campfire's plume heats and lifts the air above it;
+- water jets from a hole in a tank at Torricelli's speed, and a released tank levels out across a basin without losing water;
+- a glowing block heats a plank across an air gap by radiation.
 
 `--script file` runs a command script (`pos`, `wait`, `tool`, `press`, `click`, `explode`, `workshop`, `blueprint`, `launch`, `shot`, `log`), which is used for automated screenshots.
 
