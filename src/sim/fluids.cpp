@@ -150,6 +150,14 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
       float f = std::clamp(stableLower(rem + below) - below, 0.f, std::min(rem, W_FLOW));
       move(x, y - 1, z, f, vel);
     }
+    // Up, only when squeezed beyond what the cell above can balance.
+    if (rem > 1) {
+      float up = fillAt(x, y + 1, z);
+      if (up >= 0) {
+        float f = std::clamp(rem - stableLower(rem + up), 0.f, std::min(rem, W_FLOW));
+        move(x, y + 1, z, f, vel);
+      }
+    }
     // Sideways: the pressure difference accelerates the water, and the water
     // carries its momentum, so it surges, spreads at wave speed and sloshes.
     float hE = fillAt(x + 1, y, z), hW = fillAt(x - 1, y, z), hN = fillAt(x, y, z + 1), hS = fillAt(x, y, z - 1);
@@ -212,14 +220,6 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
           continue;
         }
         move(nx_, y, nz_, f, vel);
-      }
-    }
-    // Up, only under pressure.
-    if (rem > 1) {
-      float up = fillAt(x, y + 1, z);
-      if (up >= 0) {
-        float f = std::clamp(rem - stableLower(rem + up), 0.f, std::min(rem, W_FLOW));
-        move(x, y + 1, z, f, vel);
       }
     }
     // Don't leave a scrap too thin to keep: it goes with the main flow.
