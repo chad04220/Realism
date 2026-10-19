@@ -333,24 +333,11 @@ void Sim::stepDevices(float dt) {
           b.force += axisW * c.driveForce;
           b.torque += cross(at - b.pos, axisW * c.driveForce);
           b.wake();
-          // Airflow: push light things in front of the prop and fan any flames.
+          // The prop drives a jet of air (momentum flux F = rho A v^2).
           vec3 flow = axisW * (c.driveForce > 0 ? -1.f : 1.f);
-          for (auto& ob : bodies) {
-            if (ob.get() == &b) continue;
-            vec3 d = ob->pos - at;
-            float along = dot(d, flow);
-            if (along <= 0 || along > 2.5f) continue;
-            float off = length(d - flow * along);
-            if (off > rp.radius * 1.5f + ob->radius * 0.5f) continue;
-            float f = std::fabs(c.driveForce) * 0.6f / (1 + along * 2);
-            ob->force += flow * f;
-            ob->wake();
-          }
-          for (auto& f : fx) {
-            vec3 d = f.p - at;
-            float along = dot(d, flow);
-            if (along > 0 && along < 2.5f && length(d - flow * along) < rp.radius * 1.5f) f.v += flow * dt * 6.f;
-          }
+          float area = PI * rp.radius * rp.radius;
+          float vj = std::sqrt(std::fabs(c.driveForce) / (1.2f * std::max(0.01f, area)));
+          if (airReady) air.driveTowards(at + flow * (rp.radius * 0.6f), flow * vj, rp.radius, std::min(1.f, dt * 8));
         }
       }
       c.spin += c.spinRate * dt;
@@ -363,8 +350,13 @@ void Sim::stepDevices(float dt) {
       vec3 axisW = b.rot.rotate(normalize(c.axis));
       b.force += axisW * 160.f;
       b.wake();
-      // Exhaust from the nozzle end.
+      // Exhaust from the nozzle end: a hot, smoky jet in the air.
       vec3 tail = b.pos - axisW * (b.radius * 0.6f);
+      if (airReady) {
+        air.driveTowards(tail - axisW * 0.25f, axisW * -30.f, 0.15f, std::min(1.f, dt * 10));
+        air.addHeat(tail - axisW * 0.2f, 40000.f * dt);
+        air.addSmoke(tail - axisW * 0.3f, 0.8f * dt * 10);
+      }
       for (int i = 0; i < 6; i++)
         emit(FX_FIRE, tail + rng().unitVec() * vs, axisW * -rng().range(4, 9) + rng().unitVec() * 0.6f, rng().range(0.15f, 0.35f), vs * rng().range(2, 4), vec3(1.4f, 1.1f, 0.8f));
       emit(FX_SMOKE, tail, axisW * -2.f + rng().unitVec() * 0.4f, rng().range(2, 4), vs * 6, vec3(0.7f));

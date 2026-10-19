@@ -72,6 +72,12 @@ void Sim::stepDebris(float dt) {
     if (!kill) {
       d.v += gravity * dt;
       d.v *= (1 - drag * dt);
+      // Aerodynamic drag towards the local wind (light flakes drift, rubble barely notices).
+      if (airReady) {
+        vec3 rel = air.velocity(d.p) - d.v;
+        float k = 0.6f * vs * vs / std::max(1e-6f, MATS[d.mat].voxMass);
+        d.v += rel * std::min(1.f, k * length(rel) * dt);
+      }
       // Hot debris cools by radiation as it flies (sparks of molten metal).
       if (d.temp > 200) d.temp -= (d.temp - AMBIENT) * 0.08f * dt * cfg.thermalWarp * 0.1f;
       vec3 np = d.p + d.v * dt;

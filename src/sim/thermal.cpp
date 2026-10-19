@@ -43,8 +43,10 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
   for (int b : list) inList[b] = 1;
   std::vector<uint8_t> faceWarm(list.size(), 0);  // bit per face: hot cells there after the step
 
+  std::vector<std::pair<int, float>> airHeatAll;
   Jobs::get().parallelFor((int)list.size(), 2, [&](int b0, int b1, int) {
     std::vector<ThermEvent> loc;
+    std::vector<std::pair<int, float>> airHeat;
     for (int li = b0; li < b1; li++) {
       int bi = list[li];
       Brick* br = v.brickAt(bi);
@@ -139,16 +141,38 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
             extra += hf * A * (MATS[n].flameTemp - T);
           }
         }
-        // Convection and radiation from exposed faces.
+        // Convection to the air actually touching the surface (forced
+        // convection grows with the local wind), radiation to the surroundings.
         float Tk = T + 273.15f;
+        float vAir = 0;
+        int airCell = -1;
         if (airFaces) {
-          extra += airFaces * A * (12.f * (AMBIENT - T) + EMISS * SIGMA * (Tamb4 - Tk * Tk * Tk * Tk));
+          float Tair = AMBIENT;
+          if (s.airReady) {
+            vec3 wp = owner ? owner->toWorld(vec3(x + 0.5f, y + 0.5f, z + 0.5f), vs) : vec3((x + 0.5f) * vs, (y + 0.5f) * vs, (z + 0.5f) * vs);
+            const AirSim& air = s.air;
+            int ax = (int)(wp.x / air.h), ay = (int)(wp.y / air.h), az = (int)(wp.z / air.h);
+            if (ax >= 0 && ay >= 0 && az >= 0 && ax < air.nx && ay < air.ny && az < air.nz) {
+              airCell = air.cid(ax, ay, az);
+              Tair = air.T[airCell];
+              if (air.solid[airCell] && ay + 1 < air.ny) { airCell = air.cid(ax, ay + 1, az); Tair = air.T[airCell]; }
+              if ((fl & F_BURN) || std::fabs(T - Tair) > 40) vAir = length(air.velocity(wp));
+            }
+          }
+          float hc = 10.f + 6.f * std::min(vAir, 10.f);
+          float conv = airFaces * A * hc * (Tair - T);
+          extra += conv + airFaces * A * EMISS * SIGMA * (Tamb4 - Tk * Tk * Tk * Tk);
+          if (airCell >= 0 && std::fabs(conv) > 1e-3f) airHeat.push_back({airCell, -conv * dt / s.cfg.thermalWarp});
         }
         // Combustion.
         if (fl & F_BURN) {
           float P = (m == LIION) ? 8000.f * litres : M.power;
           if (airFaces == 0) P *= 0.1f;  // starved of oxygen: smoulders
+          else P *= 1.f + 0.25f * std::min(vAir, 6.f);  // a draught feeds the fire
           if (T < M.flameTemp * 1.15f) extra += P;
+          // Most of a flame's heat is released in the gas above the surface
+          // and carried off by the air rather than soaking into the fuel.
+          if (airCell >= 0 && airFaces > 0) airHeat.push_back({airCell, 0.6f * P * dt / std::sqrt(s.cfg.thermalWarp)});
           if (water) loc.push_back({{x, y, z}, T_EXTINGUISH});
           br->fuel[l] -= dt;
           if (br->fuel[l] <= 0) loc.push_back({{x, y, z}, T_BURNOUT});
@@ -182,8 +206,13 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
       }
       sc.keep[li] = active;
     }
-    if (!loc.empty()) { std::lock_guard<std::mutex> lk(mu); events.insert(events.end(), loc.begin(), loc.end()); }
+    if (!loc.empty() || !airHeat.empty()) {
+      std::lock_guard<std::mutex> lk(mu);
+      events.insert(events.end(), loc.begin(), loc.end());
+      airHeatAll.insert(airHeatAll.end(), airHeat.begin(), airHeat.end());
+    }
   });
+  if (s.airReady) for (auto& [c, J] : airHeatAll) s.air.addHeatCell(c, J);
 
   // Write back and keep the hot set current.
   for (size_t li = 0; li < list.size(); li++) {
@@ -244,6 +273,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
         br->temp[l] = std::min(br->temp[l], 90.f);
         v.markDirty(e.c.x, e.c.y, e.c.z);
         if (fxBudget++ < 40) s.emit(FX_STEAM, worldPos(e.c), vec3(0, 0.6f, 0), 1.5f, vs * 4);
+        if (s.airReady) s.air.addSmoke(worldPos(e.c), 0, 0.1f);
         break;
       case T_BURNOUT: {
         uint8_t res = MATS[m].residue;
@@ -304,6 +334,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
       }
       case T_BOIL:
         if (fxBudget++ < 60) s.emit(FX_STEAM, worldPos(e.c), vec3(0, 0.8f, 0), 2.f, vs * 5);
+        if (s.airReady) s.air.addSmoke(worldPos(e.c), 0, 0.15f);
         removeCell(e.c);
         break;
       case T_ROCKET: {
@@ -362,19 +393,10 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
       for (int l = 0; l < BS3; l++) {
         if (!(br->flags[l] & F_BURN)) continue;
         int x = bx * 16 + (l & 15), z = bz * 16 + ((l >> 4) & 15), y = by * 16 + (l >> 8);
-        // Plume: find the first solid voxel above within 12 cells (world only).
-        if (!owner && v.mat(x, y + 1, z) == AIR) {
-          for (int k = 2; k < 12; k++) {
-            uint8_t m = v.mat(x, y + k, z);
-            if (m == AIR) continue;
-            if (Brick* ab = v.brick(x, y + k, z)) {
-              int al = lidx(x, y + k, z);
-              float P = MATS[br->mat[l]].power * 0.35f / k;
-              ab->temp[al] += P * dt / MATS[m].heatCap;
-              hs.add(v.bindex(x, y + k, z));
-            }
-            break;
-          }
+        // Smoke into the air (soot-heavy for rubber and plastic).
+        if (s.airReady && rng().f() < 0.25f) {
+          bool sooty = br->mat[l] == RUBBER || br->mat[l] == PLASTIC;
+          s.air.addSmoke(worldPos({x, y, z}) + vec3(0, vs, 0), sooty ? 0.05f : 0.012f);
         }
         if (rng().f() > pEmit * 0.5f) continue;
         bool open = v.mat(x, y + 1, z) == AIR || v.mat(x + 1, y, z) == AIR || v.mat(x - 1, y, z) == AIR ||

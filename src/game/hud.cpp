@@ -386,6 +386,18 @@ bool Game::selftest() {
     fprintf(stderr, "  rover moved %.2f m\n", moved);
     check(moved > 1.0f, "rover drives when switched on");
   }
+  // The campfire heats the air above it, and the breeze carries the plume.
+  {
+    float tmax = 0, vup = -1e9f;
+    for (float y = 1.0f; y <= 2.4f; y += 0.2f)
+      for (float x = 7.0f; x <= 9.4f; x += 0.2f)
+        for (float z = 8.8f; z <= 10.2f; z += 0.2f) {
+          float t = sim.air.temperature(vec3(x, y, z));
+          if (t > tmax) { tmax = t; vup = sim.air.velocity(vec3(x, y, z)).y; }
+        }
+    fprintf(stderr, "  hottest air over the campfire %.0f C (rising at %.2f m/s)\n", tmax, vup);
+    check(sim.airReady && tmax > 80 && vup > 0, "campfire plume heats and lifts the air");
+  }
   // Knock a brick out of the shed wall with a hammer blow.
   {
     Hit h = sim.raycast(vec3(5.6f, 2.0f, 7.0f), normalize(vec3(0, 0, -1)), 3.f);

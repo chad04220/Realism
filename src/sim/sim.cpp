@@ -21,7 +21,49 @@ void Sim::init(const SimSettings& s) {
   fluidActive.clear();
   supportSeeds.clear();
   worldSpecials.clear();
+  airReady = false;
   g_sim = this;
+}
+
+void Sim::initAir() {
+  air.init(world, vs, 0.2f);
+  for (int b : world.shapeList) world.shapeFlag[b] = 0;
+  world.shapeList.clear();
+  airReady = true;
+}
+
+// Air <-> everything else, once per air step.
+void Sim::airCoupling(float dt) {
+  // World edits reshape the air's obstacles.
+  for (int b : world.shapeList) {
+    world.shapeFlag[b] = 0;
+    int bx = b % world.bx, bz = (b / world.bx) % world.bz, by = b / (world.bx * world.bz);
+    air.markWorldDirty(bx, by, bz);
+  }
+  world.shapeList.clear();
+  // Moving bodies push air out of their way; air drags light bodies.
+  for (auto& bp : bodies) {
+    Body& b = *bp;
+    if (b.ghost || b.frozen || b.asleep) continue;
+    mat3 R = b.R();
+    size_t stride = std::max<size_t>(1, b.samples.size() / 48);
+    vec3 F, Tq;
+    for (size_t k = 0; k < b.samples.size(); k += stride) {
+      vec3 wp = b.pos + R * b.samples[k].local;
+      vec3 pv = b.pointVel(wp);
+      air.setBodyCell(wp, pv);
+      vec3 rel = air.velocity(wp + vec3(0, air.h, 0)) - pv;
+      float s = length(rel);
+      if (s < 0.3f) continue;
+      float area = PI * b.samples[k].r * b.samples[k].r * (float)stride;
+      vec3 f = rel * (0.5f * 1.2f * 1.0f * area * s);
+      F += f;
+      Tq += cross(wp - b.pos, f);
+    }
+    b.force += F;
+    b.torque += Tq;
+  }
+  air.step(dt, world);
 }
 
 void Sim::step(float dtReal) {
@@ -64,6 +106,14 @@ void Sim::step(float dtReal) {
     stepElectric(electricAcc_);
     stats.electricMs = std::chrono::duration<float, std::milli>(clk::now() - a).count();
     electricAcc_ = 0;
+  }
+
+  if (airReady) {
+    airAcc_ += dt;
+    if (airAcc_ >= 1.f / 20.f) {
+      airCoupling(std::min(airAcc_, 1.f / 10.f));
+      airAcc_ = 0;
+    }
   }
 
   processSupport();
@@ -638,13 +688,16 @@ void Sim::stepFx(float dt) {
     Fx& f = fx[i];
     f.life -= dt;
     if (f.life <= 0) { f = fx.back(); fx.pop_back(); continue; }
+    // Effects ride the air: drag towards the local wind with a little lift of their own.
+    vec3 a = airReady ? air.velocity(f.p) : wind;
     switch (f.kind) {
-      case FX_FIRE: f.v += vec3(0, 2.2f, 0) * dt + wind * dt; f.v *= (1 - 1.5f * dt); f.size += dt * vs * 1.5f; break;
-      case FX_SMOKE: f.v += vec3(0, 0.6f, 0) * dt + wind * dt * 0.8f; f.v *= (1 - 0.6f * dt); f.size += dt * vs * 6; break;
-      case FX_STEAM: f.v += vec3(0, 1.0f, 0) * dt; f.v *= (1 - 1.f * dt); f.size += dt * vs * 8; break;
-      case FX_SPARK: case FX_EMBER: f.v += gravity * dt * (f.kind == FX_EMBER ? 0.15f : 1.f); break;
-      case FX_DUST: f.v += gravity * dt * 0.05f; f.v *= (1 - 1.2f * dt); f.size += dt * vs * 4; break;
-      case FX_SPRAY: f.v += gravity * dt; break;
+      case FX_FIRE: f.v += (a - f.v) * std::min(1.f, 4.f * dt) + vec3(0, 3.0f, 0) * dt; f.size += dt * vs * 1.5f; break;
+      case FX_SMOKE: f.v += (a - f.v) * std::min(1.f, 2.5f * dt) + vec3(0, 0.25f, 0) * dt; f.size += dt * vs * 6; break;
+      case FX_STEAM: f.v += (a - f.v) * std::min(1.f, 3.f * dt) + vec3(0, 0.6f, 0) * dt; f.size += dt * vs * 8; break;
+      case FX_SPARK: f.v += gravity * dt + (a - f.v) * std::min(1.f, 0.3f * dt); break;
+      case FX_EMBER: f.v += gravity * dt * 0.12f + (a - f.v) * std::min(1.f, 1.5f * dt); break;
+      case FX_DUST: f.v += gravity * dt * 0.05f + (a - f.v) * std::min(1.f, 2.f * dt); f.size += dt * vs * 4; break;
+      case FX_SPRAY: f.v += gravity * dt + (a - f.v) * std::min(1.f, 0.5f * dt); break;
       case FX_FLASH: f.size += dt * 8; break;
     }
     f.p += f.v * dt;

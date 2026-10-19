@@ -88,6 +88,7 @@ bool Game::init(const Args& args) {
   }
   double t0 = plat::now();
   scene = buildScene(sim);
+  sim.initAir();
   // Let everything settle onto its supports, then put it to sleep.
   for (int i = 0; i < 90; i++) sim.step(1.f / 60.f);
   for (auto& b : sim.bodies) { b->vel = vec3(0); b->angVel = vec3(0); b->asleep = true; }
@@ -876,6 +877,10 @@ void Game::useTools(float dt, plat::Input& in) {
         useAnim_ = 1;
         for (int i = 0; i < 3; i++)
           sim.emit(FX_FIRE, nozzle + cam.forward * rng().range(0.0f, 0.1f), cam.forward * rng().range(3, 6) + rng().unitVec() * 0.3f, rng().range(0.08f, 0.2f), sim.vs * 1.4f, vec3(0.6f, 0.9f, 2.2f));
+        if (sim.airReady) {
+          sim.air.driveTowards(nozzle + cam.forward * 0.25f, cam.forward * 9.f, 0.1f, std::min(1.f, dt * 8));
+          sim.air.addHeat(nozzle + cam.forward * 0.3f, 3000.f * dt);
+        }
         if (reach) {
           sim.addHeat(hit_, 12000.f, dt, 2.5f);
           if (rng().f() < 0.3f) sim.emit(FX_SPARK, hit_.point, hit_.normal + rng().unitVec(), 0.25f, sim.vs * 0.3f, vec3(3, 2, 1));
@@ -1025,6 +1030,7 @@ void Game::resetWorld() {
   sim.init(sim.cfg);
   initParts(sim.vs);
   scene = buildScene(sim);
+  sim.initAir();
   for (int i = 0; i < 90; i++) sim.step(1.f / 60.f);
   for (auto& b : sim.bodies) { b->vel = vec3(0); b->angVel = vec3(0); b->asleep = true; }
   sim.events.clear();
@@ -1106,8 +1112,12 @@ void Game::runScriptLine(const std::string& line, bool& quit) {
   }
   else if (cmd == "smooth") { int v; ss >> v; ropt.smooth = v != 0; }
   else if (cmd == "log") {
-    fprintf(stderr, "[t=%.2f] bodies=%zu awake=%d debris=%zu fx=%zu burning=%d hot=%d powered=%d circuits=%d phys=%.1fms therm=%.1fms gpu=%.1fms fps=%.0f\n",
+    fprintf(stderr, "[t=%.2f] bodies=%zu awake=%d debris=%zu fx=%zu burning=%d hot=%d powered=%d circuits=%d phys=%.1fms therm=%.1fms air=%.1fms(%d) fluid=%.1fms gpu=%.1fms fps=%.0f\n",
             sim.time, sim.bodies.size(), sim.stats.awake, sim.debris.size(), sim.fx.size(), sim.stats.burning, sim.stats.hot,
-            sim.stats.poweredDevices, sim.stats.circuits, sim.stats.physicsMs, sim.stats.thermalMs, ren.gpuMs(), fps_);
+            sim.stats.poweredDevices, sim.stats.circuits, sim.stats.physicsMs, sim.stats.thermalMs, sim.air.stepMs, sim.air.activeCells, sim.stats.fluidMs, ren.gpuMs(), fps_);
+  } else if (cmd == "probe") {
+    vec3 p; ss >> p.x >> p.y >> p.z;
+    vec3 v = sim.air.velocity(p);
+    fprintf(stderr, "[probe %.2f %.2f %.2f] air T=%.1fC v=(%.2f %.2f %.2f) smoke=%.3f\n", p.x, p.y, p.z, sim.air.temperature(p), v.x, v.y, v.z, sim.air.smoke(p));
   } else if (cmd == "quit") quit = true;
 }

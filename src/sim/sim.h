@@ -8,6 +8,7 @@
 #include "body.h"
 #include "comps.h"
 #include "volume.h"
+#include "air.h"
 
 struct Debris {          // a single loose voxel in flight
   vec3 p, v;
@@ -57,6 +58,9 @@ class Sim {
   SimSettings cfg;
   float vs = 0.025f;
   Volume world;
+  AirSim air;
+  bool airReady = false;
+  void initAir();
   HotSet worldHot;
   std::vector<std::unique_ptr<Body>> bodies;
   std::vector<Debris> debris;
@@ -133,7 +137,8 @@ class Sim {
   void processSupport();
 
  private:
-  float thermalAcc_ = 0, fluidAcc_ = 0, electricAcc_ = 0;
+  float thermalAcc_ = 0, fluidAcc_ = 0, electricAcc_ = 0, airAcc_ = 0;
+  void airCoupling(float dt);
 };
 
 extern Sim* g_sim;

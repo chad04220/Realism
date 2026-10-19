@@ -146,6 +146,7 @@ void Sim::fracture(Volume& v, const vec3& c, float R, int nseeds, Body* owner) {
 void Sim::explode(const vec3& p, float E, int sourceBody) {
   (void)sourceBody;
   event(EV_EXPLODE, p, E);
+  if (airReady) air.blast(p, E);
   // Energy available to break one voxel at distance r: the blast energy spread
   // through the sphere of radius r (near-field decay ~ 1/r^3), with a factor
   // for the shock. Buried voxels are shielded: material is eaten from the

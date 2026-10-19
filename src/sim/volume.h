@@ -44,6 +44,8 @@ class Volume {
   std::vector<std::unique_ptr<Brick>> bricks;
   std::vector<uint8_t> dirty;      // per brick: needs GPU upload
   std::vector<int> dirtyList;
+  std::vector<uint8_t> shapeFlag;  // per brick: matter added/removed (for the air grid)
+  std::vector<int> shapeList;
   uint32_t version = 0;            // bumps on every structural change
 
   Volume() = default;
@@ -53,6 +55,11 @@ class Volume {
     bx = (x + BS - 1) / BS; by = (y + BS - 1) / BS; bz = (z + BS - 1) / BS;
     bricks.clear(); bricks.resize((size_t)bx * by * bz);
     dirty.assign(bricks.size(), 0); dirtyList.clear();
+    shapeFlag.assign(bricks.size(), 0); shapeList.clear();
+  }
+  void markShape(int x, int y, int z) {
+    int b = bindex(x, y, z);
+    if (!shapeFlag[b]) { shapeFlag[b] = 1; shapeList.push_back(b); }
   }
   bool inb(int x, int y, int z) const { return (unsigned)x < (unsigned)nx && (unsigned)y < (unsigned)ny && (unsigned)z < (unsigned)nz; }
   int bindex(int x, int y, int z) const { return (x >> 4) + bx * ((z >> 4) + bz * (y >> 4)); }
@@ -97,6 +104,7 @@ class Volume {
       b.mat[l] = m; b.flags[l] = 0; b.hp[l] = 255; b.aux[l] = 0; b.comp[l] = comp; b.temp[l] = AMBIENT; b.fuel[l] = 0;
     }
     markDirty(x, y, z);
+    markShape(x, y, z);
     version++;
   }
   Cell get(int x, int y, int z) const {
@@ -118,6 +126,7 @@ class Volume {
     b.mat[l] = c.mat; b.flags[l] = c.flags; b.hp[l] = c.hp; b.aux[l] = c.aux;
     b.comp[l] = c.comp; b.temp[l] = c.temp; b.fuel[l] = c.fuel;
     markDirty(x, y, z);
+    markShape(x, y, z);
     version++;
   }
   // Field accessors for simulation code. Callers must know the cell exists.
