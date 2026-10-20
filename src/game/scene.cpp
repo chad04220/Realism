@@ -245,6 +245,90 @@ SceneInfo buildScene(Sim& s) {
       float y = base + 0.3f + hi * 1.3f;
       sh.with(BRASS, c).box(vec3(dx0 - 0.05f, y, z1 - 0.05f), vec3(dx1, y + 0.075f, z1 + 0.1f));
     }
+    uint32_t handle = newComp(makePart("Door handle", "Shed door", joints::screwed));
+    sh.with(IRON, handle).box(vec3(dx1 + 0.025f, base + 1.0f, dz1 - 0.2f), vec3(dx1 + 0.075f, base + 1.05f, dz1 - 0.1f));
+    // Stone sill under the window, a ridge cap along the top, gutters on both eaves.
+    uint32_t sill = newComp(makePart("Window sill", "Shed", joints::mortar));
+    sh.with(STONE, sill).box(vec3(x0 - 0.075f, winY0 - 0.05f, winZ0 - 0.075f), vec3(x0 + 0.025f, winY0, winZ1 + 0.075f));
+    uint32_t ridge = newComp(makePart("Ridge tile", "Shed roof", joints::mortar));
+    sh.with(TILE, ridge).boxIf(vec3(x0 - 0.15f, top + rise - 0.05f, zc - 0.125f), vec3(x1 + 0.15f, top + rise + 0.125f, zc + 0.125f), [&](const vec3& p) {
+      return p.y > roofY(p.z) + 0.025f && p.y < roofY(zc) + 0.1f - std::fabs(p.z - zc) * 0.4f;
+    });
+    for (int side = 0; side < 2; side++) {
+      uint32_t g = newComp(makePart("Gutter", "Shed roof", joints::screwed));
+      float ze = side ? z1 + 0.25f : z0 - 0.25f, dir = side ? 1.f : -1.f;
+      float gy = roofY(ze) - 0.1f;
+      sh.with(STEEL, g).boxIf(vec3(x0 - 0.15f, gy, std::min(ze, ze + dir * 0.125f)), vec3(x1 + 0.15f, gy + 0.1f, std::max(ze, ze + dir * 0.125f)), [&](const vec3& p) {
+        float u = (p.z - ze) * dir;  // 0 at the roof edge, 0.125 at the lip
+        return p.y < gy + 0.03f || u > 0.1f || u < 0.025f;
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------- wood stove
+  // A steel firebox in the shed's south-east corner, logs alight inside, and
+  // a flue through the roof. The fire draws air in at the door vents and the
+  // hot gas rises up the flue: smoke leaves at the chimney, not the room.
+  {
+    const std::string obj = "Wood stove";
+    vec3 lo(5.55f, base, 4.45f), hi(6.05f, base + 0.65f, 4.95f);
+    float legH = 0.1f, wallT = 0.05f;
+    for (int k = 0; k < 4; k++) {
+      uint32_t c = newComp(makePart("Stove leg", obj, joints::welded));
+      float lx = (k & 1) ? hi.x - 0.075f : lo.x + 0.025f, lz = (k & 2) ? hi.z - 0.075f : lo.z + 0.025f;
+      sh.with(IRON, c).box(vec3(lx, lo.y, lz), vec3(lx + 0.05f, lo.y + legH, lz + 0.05f));
+    }
+    vec3 bl = lo + vec3(0, legH, 0);
+    uint32_t body = newComp(makePart("Firebox", obj, joints::welded));
+    vec3 fc((lo.x + hi.x) * 0.5f, hi.y, (lo.z + hi.z) * 0.5f);  // flue centre on the top plate
+    sh.with(STEEL, body).boxIf(bl, hi, [&](const vec3& p) {
+      bool shell = p.x < bl.x + wallT || p.x > hi.x - wallT || p.y < bl.y + wallT || p.y > hi.y - wallT || p.z < bl.z + wallT || p.z > hi.z - wallT;
+      if (!shell) return false;
+      if (p.x < bl.x + wallT && p.y > bl.y + wallT && p.y < hi.y - wallT && p.z > bl.z + wallT && p.z < hi.z - wallT) return false;  // door opening
+      if (p.y > hi.y - wallT && length(vec3(p.x - fc.x, 0, p.z - fc.z)) < 0.06f) return false;                                // flue collar
+      return true;
+    });
+    // Door: an iron frame with a ceramic-glass window and air slots along the bottom.
+    uint32_t door = newComp(makePart("Stove door", obj, joints::bolted));
+    uint32_t glass = newComp(makePart("Door glass", obj, joints::glued));
+    float dx = bl.x - 0.025f;
+    sh.with(IRON, door).boxIf(vec3(dx, bl.y + wallT, bl.z + wallT), vec3(bl.x + wallT * 0.5f, hi.y - wallT, hi.z - wallT), [&](const vec3& p) {
+      float yy = p.y - (bl.y + wallT);
+      if (yy > 0.05f && yy < 0.075f && std::fmod(p.z - bl.z, 0.075f) < 0.05f) return false;  // air slots
+      return yy < 0.1f || p.y > hi.y - wallT - 0.05f || p.z < bl.z + wallT + 0.05f || p.z > hi.z - wallT - 0.05f;
+    });
+    sh.with(GLASS, glass).box(vec3(dx, bl.y + wallT + 0.1f, bl.z + wallT + 0.05f), vec3(dx + vs, hi.y - wallT - 0.05f, hi.z - wallT - 0.05f));
+    uint32_t knob = newComp(makePart("Door latch", obj, joints::screwed));
+    sh.with(BRASS, knob).box(vec3(dx - 0.05f, bl.y + 0.3f, hi.z - 0.13f), vec3(dx, bl.y + 0.35f, hi.z - 0.08f));
+    // Logs and embers inside, already burning.
+    uint32_t ash = newComp(makePart("Ember bed", obj, joints::resting));
+    sh.with(CHARCOAL, ash).box(bl + vec3(wallT, wallT, wallT), vec3(hi.x - wallT, bl.y + wallT + 0.05f, hi.z - wallT));
+    for (int k = 0; k < 3; k++) {
+      uint32_t lg = newComp(makePart("Split log", obj, joints::resting));
+      float z = bl.z + 0.12f + k * 0.12f, y = bl.y + wallT + 0.1f + (k == 1 ? 0.08f : 0.f);
+      sh.with(PINE, lg).cylinder(vec3(bl.x + 0.1f, y, z), vec3(hi.x - 0.1f, y, z), 0.045f);
+    }
+    W.forEach([&](int x, int y, int z, Brick* br, int l) {
+      uint32_t cc = br->comp[l];
+      if (cc == ash || (comp(cc).name == "Split log" && comp(cc).object == obj && rng().f() < 0.35f)) setBurning(W, {x, y, z}, 700);
+    });
+    // Flue: steel pipe from the collar up through the roof, with a rain cap.
+    float flueTop = roofY(fc.z) + 0.7f;
+    sh.clear(vec3(fc.x - 0.11f, top - 0.2f, fc.z - 0.11f), vec3(fc.x + 0.11f, roofY(fc.z) + 0.25f, fc.z + 0.11f));
+    uint32_t flue = newComp(makePart("Flue pipe", obj, joints::pressfit));
+    sh.with(STEEL, flue).tube(fc, vec3(fc.x, flueTop, fc.z), 0.075f, 0.05f);
+    uint32_t flash = newComp(makePart("Roof flashing", obj, joints::screwed));
+    sh.with(ALU, flash).boxIf(vec3(fc.x - 0.15f, roofY(fc.z) - 0.1f, fc.z - 0.15f), vec3(fc.x + 0.15f, roofY(fc.z) + 0.2f, fc.z + 0.15f), [&](const vec3& p) {
+      float r = length(vec3(p.x - fc.x, 0, p.z - fc.z));
+      return r > 0.075f && r < 0.15f && p.y > roofY(p.z) && p.y < roofY(p.z) + 0.03f;
+    });
+    uint32_t cap = newComp(makePart("Rain cap", obj, joints::screwed));
+    sh.with(STEEL, cap).cylinder(vec3(fc.x, flueTop + 0.08f, fc.z), vec3(fc.x, flueTop + 0.105f, fc.z), 0.13f);
+    for (int k = 0; k < 3; k++) {
+      float a = k * 2 * PI / 3;
+      sh.with(STEEL, cap).box(vec3(fc.x + std::cos(a) * 0.08f, flueTop - 0.01f, fc.z + std::sin(a) * 0.08f),
+                              vec3(fc.x + std::cos(a) * 0.08f + vs, flueTop + 0.085f, fc.z + std::sin(a) * 0.08f + vs));
+    }
   }
 
   // ---------------------------------------------------------------- workshop pad
@@ -332,6 +416,128 @@ SceneInfo buildScene(Sim& s) {
     });
   }
 
+  // ---------------------------------------------------------------- water tower
+  // A steel tank on braced legs beside the pond, full of water. A downpipe
+  // runs to a short spout with a brass gate valve: open it (E) and the water
+  // jets out at the speed the head above it gives, sqrt(2 g h).
+  {
+    const std::string obj = "Water tower";
+    auto V = [&](float m) { return (int)std::lround(m / vs); };
+    int tx0 = V(14.55f), tz0 = V(10.2f), tw = V(0.65f), ty0 = V(GY + 1.45f), th = V(0.7f);
+    uint32_t tank = newComp(makePart("Tank", obj, joints::welded));
+    uint32_t water = newComp(makePart("Water", obj, joints::terrain, C_TERRAIN));
+    for (int y = ty0; y < ty0 + th; y++)
+      for (int z = tz0; z < tz0 + tw; z++)
+        for (int x = tx0; x < tx0 + tw; x++) {
+          bool wall = x == tx0 || x == tx0 + tw - 1 || z == tz0 || z == tz0 + tw - 1 || y < ty0 + 2;
+          bool rim = y == ty0 + th - 1;
+          if (wall) W.set(x, y, z, STEEL, tank);
+          else if (!rim && y < ty0 + th - 3) W.set(x, y, z, WATER, water);
+        }
+    // Bands round the tank.
+    for (int band = 0; band < 2; band++) {
+      uint32_t b = newComp(makePart("Tank band", obj, joints::welded));
+      int y0 = ty0 + 6 + band * V(0.38f);
+      for (int y = y0; y < y0 + 2; y++)
+        for (int z = tz0 - 1; z <= tz0 + tw; z++)
+          for (int x = tx0 - 1; x <= tx0 + tw; x++)
+            if (x == tx0 - 1 || x == tx0 + tw || z == tz0 - 1 || z == tz0 + tw) W.set(x, y, z, STEEL, b);
+    }
+    // Legs and cross bracing.
+    int gy = V(GY);
+    int lx[2] = {tx0 + 1, tx0 + tw - 3}, lz[2] = {tz0 + 1, tz0 + tw - 3};
+    for (int i = 0; i < 2; i++)
+      for (int j = 0; j < 2; j++) {
+        uint32_t leg = newComp(makePart("Tower leg", obj, joints::bolted));
+        for (int y = gy - 6; y < ty0; y++)
+          for (int dz = 0; dz < 2; dz++)
+            for (int dx = 0; dx < 2; dx++) W.set(lx[i] + dx, y, lz[j] + dz, STEEL, leg);
+      }
+    for (int f = 0; f < 4; f++) {
+      uint32_t br = newComp(makePart("Brace", obj, joints::bolted));
+      bool alongX = f < 2;
+      int fixed = alongX ? (f == 0 ? lz[0] : lz[1] + 1) : (f == 2 ? lx[0] : lx[1] + 1);
+      int a = alongX ? lx[0] : lz[0], b = alongX ? lx[1] + 1 : lz[1] + 1;
+      for (int k = 0; k <= b - a; k++) {
+        float t = (float)k / (b - a);
+        int y1 = gy + 4 + (int)(t * (ty0 - gy - 8)), y2 = gy + 4 + (int)((1 - t) * (ty0 - gy - 8));
+        for (int yy : {y1, y2})
+          for (int t2 = 0; t2 < 2; t2++) {
+            if (alongX) W.set(a + k, yy + t2, fixed, STEEL, br);
+            else W.set(fixed, yy + t2, a + k, STEEL, br);
+          }
+      }
+    }
+    // Downpipe on the pond side: 2x2 voxels of water inside a steel wall,
+    // from the tank floor to a one-cell spout pointing at the pond.
+    uint32_t pipe = newComp(makePart("Downpipe", obj, joints::welded));
+    int px = tx0 + 3, pz = tz0 + tw / 2 - 1, spoutY = gy + V(0.45f);
+    for (int y = spoutY - 1; y < ty0 + 2; y++)
+      for (int dz = -1; dz <= 2; dz++)
+        for (int dx = -1; dx <= 2; dx++) {
+          bool inner = dx >= 0 && dx <= 1 && dz >= 0 && dz <= 1 && y >= spoutY;
+          if (inner) W.set(px + dx, y, pz + dz, WATER, water);
+          else if (W.mat(px + dx, y, pz + dz) != WATER) W.set(px + dx, y, pz + dz, STEEL, pipe);
+        }
+    // The gate sits flush in the pipe's -x wall, facing the pond, so the
+    // water behind it carries the whole head of the column above.
+    uint32_t gate = newComp(makePart("Gate valve", obj, joints::bolted, C_VALVE));
+    int gx = px - 1;
+    for (int y = spoutY; y <= spoutY + 1; y++)
+      for (int dz = 0; dz <= 1; dz++) {
+        Cell c; c.mat = BRASS; c.comp = gate; c.aux = 1;
+        W.put(gx, y, pz + dz, c);
+      }
+    // Valve body around the gate, a stem and a handwheel on top.
+    for (int y = spoutY - 1; y <= spoutY + 2; y++)
+      for (int dz = -1; dz <= 2; dz++) {
+        if (y >= spoutY && y <= spoutY + 1 && dz >= 0 && dz <= 1) continue;
+        Cell c; c.mat = BRASS; c.comp = gate; c.aux = 0;
+        W.put(gx - 1, y, pz + dz, c);
+      }
+    for (int y = spoutY + 3; y <= spoutY + 6; y++) { Cell c; c.mat = STEEL; c.comp = gate; W.put(gx - 1, y, pz, c); }
+    for (int a = 0; a < 24; a++) {
+      float ang = a * 2 * PI / 24;
+      int hx = gx - 1 + (int)std::lround(std::cos(ang) * 3), hz = pz + (int)std::lround(std::sin(ang) * 3);
+      Cell c; c.mat = IRON; c.comp = gate; c.aux = 0;
+      W.put(hx, spoutY + 6, hz, c);
+    }
+    // The gate's outer face is open air at the spout mouth.
+    for (int y = spoutY; y <= spoutY + 1; y++)
+      for (int dz = 0; dz <= 1; dz++) W.set(gx - 1, y, pz + dz, AIR);
+  }
+
+  // ---------------------------------------------------------------- fence
+  // Post-and-rail along the north and west edges of the yard.
+  {
+    auto run = [&](vec3 a, vec3 b) {
+      vec3 d = b - a;
+      float len = length(d);
+      int posts = (int)std::ceil(len / 1.2f);
+      vec3 u = d / len;
+      for (int i = 0; i <= posts; i++) {
+        vec3 p = a + u * (len * i / posts);
+        uint32_t c = newComp(makePart("Fence post", "Fence", joints::pressfit));
+        sh.with(OAK, c).box(p - vec3(0.04f, 0.25f, 0.04f), p + vec3(0.04f, 1.0f, 0.04f));
+        sh.with(OAK, c).boxIf(p + vec3(-0.04f, 1.0f, -0.04f), p + vec3(0.04f, 1.05f, 0.04f), [&](const vec3& q) {
+          return q.y < p.y + 1.0f + 0.05f - std::max(std::fabs(q.x - p.x), std::fabs(q.z - p.z));
+        });
+      }
+      for (int r = 0; r < 2; r++) {
+        for (int i = 0; i < posts; i++) {
+          uint32_t c = newComp(makePart("Fence rail", "Fence", joints::nailed));
+          vec3 p0 = a + u * (len * i / posts), p1 = a + u * (len * (i + 1) / posts);
+          vec3 side = normalize(cross(u, vec3(0, 1, 0))) * 0.06f;
+          float y = 0.4f + r * 0.4f;
+          sh.with(PINE, c).box(vec3(std::min(p0.x, p1.x), p0.y + y, std::min(p0.z, p1.z)) + vec3(std::min(side.x, 0.f), 0, std::min(side.z, 0.f)) * 0.5f + vec3(0, 0, 0),
+                               vec3(std::max(p0.x, p1.x), p0.y + y + 0.1f, std::max(p0.z, p1.z)) + vec3(std::fabs(side.x), 0, std::fabs(side.z)) * 0.5f + vec3(0.025f, 0, 0.025f));
+        }
+      }
+    };
+    run(vec3(0.35f, GY, 0.35f), vec3(7.4f, GY, 0.35f));
+    run(vec3(0.35f, GY, 0.35f), vec3(0.35f, GY, 9.2f));
+  }
+
   rescanWorld(s);
 
   // ---------------------------------------------------------------- bodies
@@ -357,6 +563,14 @@ SceneInfo buildScene(Sim& s) {
     }
     uint32_t shelf = newComp(makePart("Lower shelf", "Workbench", joints::screwed));
     b.with(PINE, shelf).box(o + vec3(0.1f, 0.15f, 0.075f), o + vec3(1.65f, 0.175f, 0.65f));
+    // Bench vise at the right-hand end: cast-iron jaws on a steel screw.
+    uint32_t jaw1 = newComp(makePart("Vise fixed jaw", "Workbench", joints::bolted));
+    uint32_t jaw2 = newComp(makePart("Vise moving jaw", "Workbench", joints::pressfit));
+    uint32_t screw = newComp(makePart("Vise screw", "Workbench", joints::pressfit));
+    b.with(IRON, jaw1).box(o + vec3(1.5f, 0.9f, 0.6f), o + vec3(1.72f, 0.99f, 0.65f));
+    b.with(IRON, jaw2).box(o + vec3(1.5f, 0.86f, 0.7f), o + vec3(1.72f, 0.99f, 0.75f));
+    b.with(STEEL, screw).cylinder(o + vec3(1.61f, 0.89f, 0.6f), o + vec3(1.61f, 0.89f, 0.795f), 0.0125f);
+    b.with(STEEL, screw).cylinder(o + vec3(1.51f, 0.89f, 0.78f), o + vec3(1.71f, 0.89f, 0.78f), 0.0125f);
     spawnBody(s, std::move(v), o);
   }
 

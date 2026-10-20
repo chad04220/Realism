@@ -10,8 +10,9 @@ struct SceneInfo {
 };
 
 // Build the starting environment: terrain, pond, sand, a brick shed with a
-// workbench, lamp and fan inside, a tree, a campfire, a powder keg, crates,
-// a reinforced concrete column, a rover and the workshop pad.
+// wood stove, workbench, lamp and fan inside, a tree, a campfire, a powder
+// keg, crates, a reinforced concrete column, a water tower with a valve, a
+// fence, a rover and the workshop pad.
 SceneInfo buildScene(Sim& s);
 // After bulk edits: rebuild the world's electrical, thermal and fluid bookkeeping.
 void rescanWorld(Sim& s);

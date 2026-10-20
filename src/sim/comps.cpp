@@ -34,6 +34,7 @@ const char* compTypeName(CompType t) {
     case C_HEATER: return "Heater \xC2\xB7 1.5 kW";
     case C_CHARGE: return "Explosive charge";
     case C_ROCKET: return "Solid rocket motor";
+    case C_VALVE: return "Gate valve";
     default: return "Part";
   }
 }

@@ -109,6 +109,9 @@ void Game::drawTargetCard(float x, float y) {
       case C_CHARGE:
         row("Fuse", cp->fuse >= 0 ? "LIT" : "Safe", cp->fuse >= 0 ? theme::danger : theme::dim);
         break;
+      case C_VALVE:
+        row("Valve", cp->lit ? "Open" : "Closed", cp->lit ? theme::accent : theme::dim);
+        break;
       default: break;
     }
   }
@@ -449,6 +452,37 @@ bool Game::selftest() {
     fprintf(stderr, "  hottest air over the campfire %.0f C (rising at %.2f m/s)\n", tmax, vup);
     check(sim.airReady && tmax > 80 && vup > 0, "campfire plume heats and lifts the air");
   }
+  // The wood stove draws: warm air rises up its flue.
+  {
+    float vmax = -1e9f, tmax = 0;
+    for (float y = 2.6f; y <= 3.6f; y += 0.1f)
+      for (float dx = -0.1f; dx <= 0.1f; dx += 0.1f)
+        for (float dz = -0.1f; dz <= 0.1f; dz += 0.1f) {
+          vec3 p(5.8f + dx, y, 4.7f + dz);
+          vmax = std::max(vmax, sim.air.velocity(p).y);
+          tmax = std::max(tmax, sim.air.temperature(p));
+        }
+    fprintf(stderr, "  stove flue: air rising at %.2f m/s, %.0f C\n", vmax, tmax);
+    check(vmax > 0.3f && tmax > AMBIENT + 5, "wood stove draws air up its flue");
+  }
+  // Opening the water tower's valve sends out a jet with the tower's head behind it.
+  {
+    uint32_t gate = 0;
+    for (uint32_t i = 0; i < comps().size(); i++) if (comps()[i].type == C_VALVE && comps()[i].object == "Water tower") gate = i;
+    ivec3 near(0, 0, 0);
+    if (gate) sim.world.forEach([&](int x, int y, int z, Brick* br, int l) { if (br->comp[l] == gate && br->aux[l] == 1) near = ivec3(x, y, z); });
+    float vmax = 0;
+    if (gate) {
+      toggleValve(gate, -1, near);
+      for (int i = 0; i < 60; i++) {
+        sim.step(1.f / 60.f);
+        for (auto& d : sim.debris) if (d.mat == WATER) vmax = std::max(vmax, length(vec3(d.v.x, 0, d.v.z)));
+      }
+      toggleValve(gate, -1, near);
+    }
+    fprintf(stderr, "  water tower: valve %s, jet %.2f m/s\n", gate ? "found" : "missing", vmax);
+    check(gate && vmax > 3.f, "water tower valve jets water");
+  }
   // Knock a brick out of the shed wall with a hammer blow.
   {
     Hit h = sim.raycast(vec3(5.6f, 2.0f, 7.0f), normalize(vec3(0, 0, -1)), 3.f);
@@ -579,6 +613,7 @@ void Game::drawPrompt(float cx, float cy) {
     case C_CHARGE: act = cp.fuse >= 0 ? nullptr : "Light the fuse"; break;
     case C_ROCKET: act = cp.lit ? nullptr : "Ignite"; break;
     case C_BATTERY: act = "Check charge"; break;
+    case C_VALVE: act = cp.lit ? "Close valve" : "Open valve"; break;
     default: break;
   }
   if (!act) return;

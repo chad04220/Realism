@@ -89,6 +89,7 @@ class Game {
   void runScriptLine(const std::string& line, bool& quit);
   bool selftest();
   void toggleSwitch(int bodyIndex, uint32_t comp);
+  void toggleValve(uint32_t comp, int bodyIndex, const ivec3& nearCell);
   void detonateCharge(int bodyIndex, uint32_t comp);
   void throwCharge();
   void placeCharge();
@@ -131,6 +132,7 @@ class Game {
   uint32_t hoverCompCached_ = 0;
   int hoverBodyCached_ = -3;
   int hoverBodyIdCached_ = 0;
+  std::map<uint32_t, std::vector<ivec3>> valveCells_;  // gate cells lifted out of open valves
   std::vector<uint32_t> remoteCharges_;
   std::vector<int> remoteChargeBodies_;
   std::deque<Toast> toasts_;

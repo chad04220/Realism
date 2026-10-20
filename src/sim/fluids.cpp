@@ -180,9 +180,10 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
         float f = o.f * scale;
         if (f < 0.0003f) continue;
         int nx_ = x + o.dx, nz_ = z + o.dz;
-        if (o.nf == 0 && f >= 0.03f && fillAt(nx_, y - 1, nz_) == 0 && fillAt(nx_, y - 2, nz_) == 0) {
-          // Over an edge or out of a hole: it leaves as a jet, pushed by the
-          // water standing behind it (Torricelli).
+        bool overDrop = fillAt(nx_, y - 1, nz_) == 0 && fillAt(nx_, y - 2, nz_) == 0;
+        if (o.nf == 0 && f >= 0.03f && (overDrop || hj > 4 * vs)) {
+          // Over an edge, or out of a hole with a head of water behind it: it
+          // leaves as a jet at Torricelli's speed.
           vec3 dir((float)o.dx, 0, (float)o.dz);
           vec3 v0 = hj > 1.5f * vs ? dir * std::sqrt(2 * g * (hj - 0.5f * vs)) : dir * 0.3f;
           f = std::min(f, rem);

@@ -22,6 +22,7 @@ class AirSim {
   float temperature(const vec3& p) const;
   float smoke(const vec3& p) const;
   // Sources.
+  int openCellAt(const vec3& p) const;           // the cell a source here feeds (-1 outside)
   void addHeat(const vec3& p, float joules);
   void addHeatCell(int c, float joules) { heatAcc[c] += joules; }
   void driveTowards(const vec3& p, const vec3& target, float radius, float k);  // fans, jets

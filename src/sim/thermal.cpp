@@ -153,11 +153,9 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
           if (s.airReady) {
             vec3 wp = owner ? owner->toWorld(vec3(x + 0.5f, y + 0.5f, z + 0.5f), vs) : vec3((x + 0.5f) * vs, (y + 0.5f) * vs, (z + 0.5f) * vs);
             const AirSim& air = s.air;
-            int ax = (int)(wp.x / air.h), ay = (int)(wp.y / air.h), az = (int)(wp.z / air.h);
-            if (ax >= 0 && ay >= 0 && az >= 0 && ax < air.nx && ay < air.ny && az < air.nz) {
-              airCell = air.cid(ax, ay, az);
+            airCell = air.openCellAt(wp);
+            if (airCell >= 0) {
               Tair = air.T[airCell];
-              if (air.solid[airCell] && ay + 1 < air.ny) { airCell = air.cid(ax, ay + 1, az); Tair = air.T[airCell]; }
               if ((fl & F_BURN) || std::fabs(T - Tair) > 40) vAir = length(air.velocity(wp));
             }
           }

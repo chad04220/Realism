@@ -2,7 +2,7 @@
 
 A voxel physics sandbox for Windows where every object is assembled from the parts that would make it work, and every part is made of a real material.
 
-The desk lamp is a cast-iron base, a 12 V Li-ion pack with + and − terminals, a toggle switch, copper flex routed up a steel pole, an aluminium shade and a glass bulb with a tungsten filament. The shed is individual bricks laid in mortar under oak rafters and clay tiles. The rover is a plywood deck, a motor on a steel drive shaft, bearing blocks and rubber tyres on steel rims. You can take all of it apart, piece by piece.
+The desk lamp is a cast-iron base, a 12 V Li-ion pack with + and − terminals, a toggle switch, copper flex routed up a steel pole, an aluminium shade and a glass bulb with a tungsten filament. The shed is individual bricks laid in mortar under oak rafters and clay tiles, with gutters, a ridge cap and a stone sill. The wood stove in its corner is a steel firebox with a glass door and air slots, logs burning inside, and a flue through the roof that really draws: the hot gas rises up the pipe and the smoke leaves at the chimney. The water tower by the pond is a steel tank on braced legs with a downpipe and a brass gate valve; open it (E) and the water jets out at the speed its head gives. The rover is a plywood deck, a motor on a steel drive shaft, bearing blocks and rubber tyres on steel rims. You can take all of it apart, piece by piece.
 
 ![Overview](docs/screenshots/overview.jpg)
 
@@ -92,7 +92,7 @@ Heat runs 20× faster than real time by default (`thermal_warp`), so fires and f
 | Key | Action |
 |---|---|
 | WASD, Space, Shift, Ctrl | Move, jump, sprint, crouch |
-| E | Use: flip switches, reverse motors, light fuses, ignite rockets, check batteries |
+| E | Use: flip switches, open valves, reverse motors, light fuses, ignite rockets, check batteries |
 | F | Flashlight |
 | N | Fly mode |
 | T | Slow motion |
@@ -186,7 +186,9 @@ This builds the world and checks that:
 - the torch can bring steel to a glow;
 - the campfire's plume heats and lifts the air above it;
 - water jets from a hole in a tank at Torricelli's speed, and a released tank levels out across a basin without losing water;
-- a glowing block heats a plank across an air gap by radiation.
+- a glowing block heats a plank across an air gap by radiation;
+- the wood stove draws warm air up its flue;
+- opening the water tower's valve sends out a jet at about √(2gh) for its head.
 
 `--script file` runs a command script (`pos`, `wait`, `tool`, `press`, `click`, `explode`, `workshop`, `blueprint`, `launch`, `shot`, `log`), which is used for automated screenshots.
 

@@ -627,6 +627,7 @@ void Game::useKey() {
         audio.play(SFX_SIZZLE, hit_.point);
       }
       break;
+    case C_VALVE: toggleValve(hover_.comp, bi, hit_.cell); audio.play(SFX_CLICK, hit_.point); break;
     case C_ROCKET:
       if (!c.lit && c.fuel > 0) { c.lit = true; toast("Rocket ignited!", ui::theme::warm, ui::I_FLAME); if (bi >= 0) sim.bodies[bi]->wake(); }
       break;
@@ -1165,4 +1166,39 @@ void Game::titleFrame(float dt) {
     else drawMenu();
   }
   ui::end();
+}
+
+// A valve's gate is its cells marked aux = 1: opening lifts them out (the
+// water behind is free to flow), closing drops them back in.
+void Game::toggleValve(uint32_t id, int bi, const ivec3& near) {
+  Component& c = comp(id);
+  Volume& v = bi >= 0 ? sim.bodies[bi]->vol : sim.world;
+  auto& cells = valveCells_[id];
+  if (!c.lit) {
+    cells.clear();
+    for (int z = near.z - 12; z <= near.z + 12; z++)
+      for (int y = near.y - 12; y <= near.y + 12; y++)
+        for (int x = near.x - 12; x <= near.x + 12; x++) {
+          if (!v.inb(x, y, z)) continue;
+          Brick* br = v.brick(x, y, z);
+          if (!br) continue;
+          int l = lidx(x, y, z);
+          if (br->comp[l] == id && br->aux[l] == 1) cells.push_back({x, y, z});
+        }
+    for (auto& p : cells) {
+      if (bi < 0) sim.putWorld(p.x, p.y, p.z, Cell{});
+      else v.set(p.x, p.y, p.z, AIR);
+    }
+    c.lit = true;
+    toast("Valve open", ui::theme::accent, ui::I_DROP);
+  } else {
+    for (auto& p : cells) {
+      Cell g; g.mat = BRASS; g.comp = id; g.aux = 1;
+      if (bi < 0) sim.putWorld(p.x, p.y, p.z, g);
+      else v.put(p.x, p.y, p.z, g);
+    }
+    c.lit = false;
+    toast("Valve closed", ui::theme::dim, ui::I_DROP);
+  }
+  if (bi >= 0) { sim.bodies[bi]->shapeDirty = true; sim.bodies[bi]->wake(); }
 }

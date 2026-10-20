@@ -39,8 +39,17 @@ void AirSim::init(const Volume& world, float vs, float cellSize) {
     if (m == AIR || MATS[m].phase == GAS) return;
     occCount[cid(x / cellVox, y / cellVox, z / cellVox)] += 1;
   });
+  // Partly filled cells get the full test (does matter block the air?).
   float full = (float)(cellVox * cellVox * cellVox);
-  for (size_t i = 0; i < nc; i++) solid[i] = occCount[i] > 0.5f * full;
+  Jobs::get().parallelFor(ny, 1, [&](int y0, int y1, int) {
+    for (int y = y0; y < y1; y++)
+      for (int z = 0; z < nz; z++)
+        for (int x = 0; x < nx; x++) {
+          float o = occCount[cid(x, y, z)];
+          if (o >= full) solid[cid(x, y, z)] = 1;
+          else if (o > 0) recountCell(world, x, y, z);
+        }
+  });
   // Start with the breeze everywhere above ground.
   for (int y = 0; y < ny; y++)
     for (int z = 0; z < nz; z++)
@@ -54,16 +63,26 @@ void AirSim::init(const Volume& world, float vs, float cellSize) {
 void AirSim::markWorldDirty(int bx, int by, int bz) { dirtyBricks.push_back(bx | (by << 10) | (bz << 20)); }
 
 void AirSim::recountCell(const Volume& world, int cx, int cy, int cz) {
-  int n = 0;
-  for (int y = cy * cellVox; y < (cy + 1) * cellVox; y++)
-    for (int z = cz * cellVox; z < (cz + 1) * cellVox; z++)
-      for (int x = cx * cellVox; x < (cx + 1) * cellVox; x++) {
-        uint8_t m = world.mat(x, y, z);
-        if (m != AIR && MATS[m].phase != GAS) n++;
+  // A cell blocks the air when matter covers nearly all of it seen along
+  // some axis: a thin wall or roof does, a pipe running through it doesn't.
+  const int n = cellVox;
+  static thread_local std::vector<uint8_t> px, py, pz;
+  px.assign((size_t)n * n, 0); py.assign((size_t)n * n, 0); pz.assign((size_t)n * n, 0);
+  int count = 0;
+  for (int y = 0; y < n; y++)
+    for (int z = 0; z < n; z++)
+      for (int x = 0; x < n; x++) {
+        uint8_t m = world.mat(cx * n + x, cy * n + y, cz * n + z);
+        if (m == AIR || MATS[m].phase == GAS || MATS[m].phase == LIQUID) continue;
+        count++;
+        px[y * n + z] = 1; py[z * n + x] = 1; pz[y * n + x] = 1;
       }
+  int bx = 0, by = 0, bz = 0;
+  for (int i = 0; i < n * n; i++) { bx += px[i]; by += py[i]; bz += pz[i]; }
   int c = cid(cx, cy, cz);
-  occCount[c] = (float)n;
-  solid[c] = n > 0.5f * cellVox * cellVox * cellVox;
+  occCount[c] = (float)count;
+  float cover = (float)std::max(bx, std::max(by, bz)) / (n * n);
+  solid[c] = count > n * n * n / 2 || (cover > 0.85f && count >= n * n / 2);
 }
 
 // ---------------------------------------------------------------- sampling
@@ -125,16 +144,22 @@ float AirSim::smoke(const vec3& pw) const { if (smk.empty()) return 0; vec3 g = 
 
 // ---------------------------------------------------------------- sources
 
-void AirSim::addHeat(const vec3& pw, float J) {
+// Sources inside matter (a fire in a stove, a burning log) feed the first
+// open cell above them.
+int AirSim::openCellAt(const vec3& pw) const {
   int x = (int)(pw.x / h), y = (int)(pw.y / h), z = (int)(pw.z / h);
-  if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) return;
-  heatAcc[cid(x, y, z)] += J;
+  if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) return -1;
+  for (int k = 0; k < 4 && y + k < ny; k++)
+    if (!solid[cid(x, y + k, z)]) return cid(x, y + k, z);
+  return cid(x, y, z);
 }
-
+void AirSim::addHeat(const vec3& pw, float J) {
+  int c = openCellAt(pw);
+  if (c >= 0) heatAcc[c] += J;
+}
 void AirSim::addSmoke(const vec3& pw, float amount, float steam) {
-  int x = (int)(pw.x / h), y = (int)(pw.y / h), z = (int)(pw.z / h);
-  if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) return;
-  int c = cid(x, y, z);
+  int c = openCellAt(pw);
+  if (c < 0) return;
   smk[c] = std::min(8.f, smk[c] + amount);
   stm[c] = std::min(8.f, stm[c] + steam);
 }
