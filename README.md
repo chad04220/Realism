@@ -4,12 +4,15 @@ A voxel physics sandbox for Windows where every object is assembled from the par
 
 The desk lamp is a cast-iron base, a 12 V Li-ion pack with + and − terminals, a toggle switch, copper flex routed up a steel pole, an aluminium shade and a glass bulb with a tungsten filament. The shed is individual bricks laid in mortar under oak rafters and clay tiles, with gutters, a ridge cap and a stone sill. The wood stove in its corner is a steel firebox with a glass door and air slots, logs burning inside, and a flue through the roof that really draws: the hot gas rises up the pipe and the smoke leaves at the chimney. The water tower by the pond is a steel tank on braced legs with a downpipe and a brass gate valve; open it (E) and the water jets out at the speed its head gives. The rover is a plywood deck, a motor on a steel drive shaft, bearing blocks and rubber tyres on steel rims. You can take all of it apart, piece by piece.
 
-![Overview](docs/screenshots/overview.jpg)
+![Title screen](docs/screenshots/title.jpg)
+
+![The yard: campfire smoke drifting on the breeze, the stove's chimney drawing](docs/screenshots/overview.jpg)
 
 | | |
 |---|---|
-| ![Workbench, lit lamp, Scanner readout](docs/screenshots/workbench.jpg) | ![Workshop with the Rover blueprint](docs/screenshots/workshop.jpg) |
-| ![After a 300 kJ blast](docs/screenshots/explosion.jpg) | ![Blowtorch on a brick wall: 1500 °C](docs/screenshots/torch.jpg) |
+| ![Wood stove in the shed, flue up through the roof](docs/screenshots/stove.jpg) | ![Water tower valve open: a jet at Torricelli's speed](docs/screenshots/tower.jpg) |
+| ![Workbench, lit lamp, scanner readout](docs/screenshots/workbench.jpg) | ![Workshop with the Rover blueprint](docs/screenshots/workshop.jpg) |
+| ![Blowtorch on a brick wall: 1500 °C](docs/screenshots/torch.jpg) | ![After a 300 kJ blast: dust and smoke in the air](docs/screenshots/explosion.jpg) |
 
 ## What's simulated
 
@@ -162,7 +165,7 @@ Requirements: OpenGL 4.3 and a CPU with AVX2.
 | `render_scale` | 1.0 | Lower it for more frame rate (0.75 is a good laptop setting). |
 | `thermal_warp` | 20 | How much faster heat runs than real time. |
 | `threads` | 0 | 0 uses every hardware thread. |
-| `smooth_surfaces`, `shadows`, `bloom` | on | Also in the in-game menu. |
+| `smooth_surfaces`, `shadows`, `bloom`, `volumetrics` | on | Also in the in-game settings. `volumetrics` is the ray-marched smoke, steam and heat haze. |
 
 The defaults target a 6-core/12-thread laptop CPU (e.g. i7-10750H) with an 8 GB GPU:
 - About 330 MB of system RAM for the world.
@@ -190,7 +193,7 @@ This builds the world and checks that:
 - the wood stove draws warm air up its flue;
 - opening the water tower's valve sends out a jet at about √(2gh) for its head.
 
-`--script file` runs a command script (`pos`, `wait`, `tool`, `press`, `click`, `explode`, `workshop`, `blueprint`, `launch`, `shot`, `log`), which is used for automated screenshots.
+`--script file` runs a command script (`pos`, `wait`, `tool`, `press`, `click`, `explode`, `workshop`, `blueprint`, `launch`, `title`, `menu`, `shot`, `log`, `probe x y z` for the air and radiant heat at a point), which is used for automated screenshots.
 
 ## Licence notes
 
