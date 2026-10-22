@@ -48,25 +48,43 @@ Body* Game::spawnTemplate(const Template& t, const vec3& worldMin, const quat& r
 }
 
 bool Game::init(const Args& args) {
+  const bool headless = args.headless || args.selftest;
   std::string userCfg = plat::userDataDir() + "/settings.cfg";
   settings.load("settings.cfg");
   settings.load(userCfg);
   if (args.voxelSize > 0) settings.voxelSize = args.voxelSize;
+  settings.sanitize();
+  // Refuse a config whose voxel grid would exhaust memory, before allocating it.
+  const double cells = (double)(settings.worldX / settings.voxelSize) *
+                       (double)(settings.worldY / settings.voxelSize) *
+                       (double)(settings.worldZ / settings.voxelSize);
+  if (cells > 400e6) {
+    char msg[320];
+    snprintf(msg, sizeof msg,
+             "World of %.1f x %.1f x %.1f m at %.1f cm needs about %.0f million voxels.\n"
+             "Use a larger voxel_size or a smaller world in settings.cfg (or pass --voxel).",
+             settings.worldX, settings.worldY, settings.worldZ, settings.voxelSize * 100, cells / 1e6);
+    fprintf(stderr, "realism: %s\n", msg);
+    if (!headless) plat::messageBox("Realism", msg);
+    return false;
+  }
   int w = args.w ? args.w : settings.width, h = args.h ? args.h : settings.height;
   int threads = settings.threads > 0 ? settings.threads : plat::cpuThreads();
   Jobs::get().start(std::max(1, threads));
-  if (!plat::init("Realism", w, h, settings.fullscreen && !scripted_, settings.vsync && !scripted_)) return false;
-  if (!glLoad()) {
-    std::string m = std::string("OpenGL 4.3 function missing: ") + glMissing() + "\nPlease update your graphics driver.";
-    plat::messageBox("Realism", m.c_str());
-    return false;
+  if (!headless) {
+    if (!plat::init("Realism", w, h, settings.fullscreen && !scripted_, settings.vsync && !scripted_)) return false;
+    if (!glLoad()) {
+      std::string m = std::string("OpenGL 4.3 function missing: ") + glMissing() + "\nPlease update your graphics driver.";
+      plat::messageBox("Realism", m.c_str());
+      return false;
+    }
+    fprintf(stderr, "GL: %s | %s | %s\n", (const char*)glGetString(GL_VENDOR), (const char*)glGetString(GL_RENDERER),
+            (const char*)glGetString(GL_VERSION));
+    // Loading screen while the world builds.
+    glClearColor(0.07f, 0.08f, 0.1f, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    plat::swap();
   }
-  fprintf(stderr, "GL: %s | %s | %s\n", (const char*)glGetString(GL_VENDOR), (const char*)glGetString(GL_RENDERER),
-          (const char*)glGetString(GL_VERSION));
-  // Loading screen while the world builds.
-  glClearColor(0.07f, 0.08f, 0.1f, 1);
-  glClear(GL_COLOR_BUFFER_BIT);
-  plat::swap();
 
   SimSettings ss;
   ss.voxelSize = settings.voxelSize;
@@ -74,8 +92,8 @@ bool Game::init(const Args& args) {
   ss.thermalWarp = settings.thermalWarp;
   sim.init(ss);
   initParts(sim.vs);
-  if (!ui::init()) return false;
-  {
+  if (!headless) {
+    if (!ui::init()) return false;
     ui::begin(plat::width(), plat::height(), uiScale());
     float s = uiScale();
     ui::text(plat::width() * 0.5f, plat::height() * 0.5f - 40 * s, "REALISM", 54 * s, ui::theme::text, 1, 0.08f);
@@ -96,12 +114,6 @@ bool Game::init(const Args& args) {
   sim.events.clear();
   fprintf(stderr, "World built in %.2f s: %zu voxels, %zu MB, %zu bodies\n", plat::now() - t0, sim.world.countSolid(),
           sim.world.memoryBytes() >> 20, sim.bodies.size());
-  if (!ren.init(&sim)) {
-    plat::messageBox("Realism", ("Shader compile failed:\n" + Shader::lastError).c_str());
-    return false;
-  }
-  ren.groundY = scene.groundY - 0.005f;
-  ren.uploadAllWorld();
   ropt.smooth = settings.smooth;
   ropt.shadows = settings.shadows;
   ropt.bloom = settings.bloom;
@@ -109,16 +121,24 @@ bool Game::init(const Args& args) {
   ropt.renderScale = settings.renderScale;
   ropt.exposure = settings.exposure;
   cam.fov = settings.fov * PI / 180.f;
-  audio.init(settings.volume);
-  workshop = std::make_unique<Workshop>(*this);
-  workshop->createJig();
-  buildViewmodels();
+  if (!headless) {
+    if (!ren.init(&sim)) {
+      plat::messageBox("Realism", ("Shader compile failed:\n" + Shader::lastError).c_str());
+      return false;
+    }
+    ren.groundY = scene.groundY - 0.005f;
+    ren.uploadAllWorld();
+    audio.init(settings.volume);
+    workshop = std::make_unique<Workshop>(*this);
+    workshop->createJig();
+    buildViewmodels();
+  }
   pl_.pos = scene.spawn;
   pl_.yaw = scene.spawnYaw;
   pl_.pitch = -0.12f;
   lastTime_ = plat::now();
-  title_ = !scripted_;
-  if (!title_) {
+  title_ = !scripted_ && !headless;
+  if (!title_ && !headless) {
     toast("Welcome to Realism \xE2\x80\x94 press F1 for controls", ui::theme::accent, ui::I_GEAR);
     toast("Everything here is built from real parts. Take it apart.", ui::theme::text);
   }
@@ -613,17 +633,21 @@ void Game::useKey() {
       break;
     }
     case C_CHARGE:
-      if (c.fuse < 0) {
-        c.fuse = 3.f;
-        if (bi < 0) {  // world-mounted: arm it via the remote list instead
+      if (bi < 0) {
+        // A charge fixed in the world has no body clock to burn a fuse, so it is
+        // armed for the remote detonator (G) instead. Arm it only once.
+        if (!c.lit) {
+          c.lit = true;
           remoteCharges_.push_back(hover_.comp);
           remoteChargeBodies_.push_back(0);
           toast("Charge armed \xE2\x80\x94 press G to detonate", ui::theme::warm, ui::I_BOMB);
-        } else {
-          toast("Fuse lit! 3 seconds\xE2\x80\xA6", ui::theme::danger, ui::I_BOMB);
-          Body& b = *sim.bodies[bi];
-          b.vol.forEach([&](int x, int y, int z, Brick* br, int l) { if (br->comp[l] == hover_.comp) { br->flags[l] |= F_ARMED; b.vol.markDirty(x, y, z); } });
+          audio.play(SFX_CLICK, hit_.point, 0.8f, 0.7f);
         }
+      } else if (c.fuse < 0) {
+        c.fuse = 3.f;
+        toast("Fuse lit! 3 seconds\xE2\x80\xA6", ui::theme::danger, ui::I_BOMB);
+        Body& b = *sim.bodies[bi];
+        b.vol.forEach([&](int x, int y, int z, Brick* br, int l) { if (br->comp[l] == hover_.comp) { br->flags[l] |= F_ARMED; b.vol.markDirty(x, y, z); } });
         audio.play(SFX_SIZZLE, hit_.point);
       }
       break;
@@ -727,6 +751,7 @@ void Game::placeCharge() {
   Component proto = t->proto;
   proto.name = "Remote charge";
   proto.object = "Demolition";
+  proto.lit = true;  // armed for the remote detonator, not burning a fuse
   uint32_t id = newComp(proto);
   int placed = 0;
   t->vol.forEach([&](int x, int y, int z, Brick* br, int l) {
@@ -1052,6 +1077,20 @@ void Game::resetWorld() {
   grabId_ = 0;
   remoteCharges_.clear();
   remoteChargeBodies_.clear();
+  valveCells_.clear();
+  toasts_.clear();
+  hoverCompCached_ = 0;
+  hoverBodyCached_ = -3;
+  hoverBodyIdCached_ = 0;
+  hit_ = Hit{};
+  hover_ = HoverInfo{};
+  flash_ = shake_ = 0;
+  paused_ = false;
+  help_ = false;
+  stats_ = false;
+  menu_ = false;
+  hud_ = true;
+  title_ = false;
   mode_ = M_PLAY;
   toast("World reset", ui::theme::accent);
 }

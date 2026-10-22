@@ -155,6 +155,11 @@ class Sim {
  private:
   float thermalAcc_ = 0, fluidAcc_ = 0, electricAcc_ = 0, airAcc_ = 0;
   void airCoupling(float dt);
+  // Visited set for the support flood: one bit per world cell. The flood is
+  // single-threaded and only needs to know which cells this particular walk
+  // has already queued, so a byte or word per cell would be wasted memory
+  // (16 MB at the default world size instead of 512 MB).
+  std::vector<uint64_t> supportVisit_;
 };
 
 extern Sim* g_sim;

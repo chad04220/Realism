@@ -21,4 +21,7 @@ struct Settings {
 
   void load(const std::string& path);
   void save(const std::string& path) const;
+  // Clamp every value to a range the simulation and renderer can handle, so a
+  // typo in settings.cfg can't hang or exhaust memory at start-up.
+  void sanitize();
 };

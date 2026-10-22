@@ -1,5 +1,7 @@
 // In-game HUD, menus and the help sheet.
+#include <cmath>
 #include <cstdio>
+#include <fstream>
 #include "game.h"
 #include "workshop.h"
 #include "assemblies.h"
@@ -107,7 +109,8 @@ void Game::drawTargetCard(float x, float y) {
         row("Motor", b, cp->lit ? theme::warm : theme::dim);
         break;
       case C_CHARGE:
-        row("Fuse", cp->fuse >= 0 ? "LIT" : "Safe", cp->fuse >= 0 ? theme::danger : theme::dim);
+        row("Fuse", cp->fuse >= 0 ? "LIT" : cp->lit ? "Armed \xC2\xB7 G" : "Safe",
+            cp->fuse >= 0 ? theme::danger : cp->lit ? theme::warm : theme::dim);
         break;
       case C_VALVE:
         row("Valve", cp->lit ? "Open" : "Closed", cp->lit ? theme::accent : theme::dim);
@@ -403,6 +406,53 @@ bool Game::selftest() {
     fprintf(stderr, "%s %s\n", ok ? "PASS" : "FAIL", what);
     if (!ok) fails++;
   };
+  // Settings round-trip: save() writes inline comments, so load() must strip them.
+  {
+    std::string p = plat::userDataDir() + "/selftest-settings.cfg";
+    Settings s;
+    s.voxelSize = 0.025f; s.worldX = 12; s.worldY = 6; s.worldZ = 14; s.thermalWarp = 7;
+    s.threads = 3; s.width = 1280; s.height = 720; s.fullscreen = true; s.vsync = false;
+    s.renderScale = 0.75f; s.smooth = false; s.shadows = true; s.bloom = false; s.volumetrics = true;
+    s.fov = 61; s.exposure = 1.5f; s.uiScale = 1.25f; s.sensitivity = 2; s.invertY = true; s.volume = 0.5f;
+    s.save(p);
+    Settings t;
+    t.load(p);
+    std::remove(p.c_str());
+    bool same = std::fabs(t.voxelSize - s.voxelSize) < 1e-5f && std::fabs(t.worldX - s.worldX) < 1e-5f &&
+                std::fabs(t.worldY - s.worldY) < 1e-5f && std::fabs(t.worldZ - s.worldZ) < 1e-5f &&
+                std::fabs(t.thermalWarp - s.thermalWarp) < 1e-5f && t.threads == s.threads &&
+                t.width == s.width && t.height == s.height && t.fullscreen == s.fullscreen && t.vsync == s.vsync &&
+                std::fabs(t.renderScale - s.renderScale) < 1e-5f && t.smooth == s.smooth && t.shadows == s.shadows &&
+                t.bloom == s.bloom && t.volumetrics == s.volumetrics && std::fabs(t.fov - s.fov) < 1e-5f &&
+                std::fabs(t.exposure - s.exposure) < 1e-5f && std::fabs(t.uiScale - s.uiScale) < 1e-5f &&
+                std::fabs(t.sensitivity - s.sensitivity) < 1e-5f && t.invertY == s.invertY &&
+                std::fabs(t.volume - s.volume) < 1e-5f;
+    if (!same) fprintf(stderr, "  settings did not survive the round-trip\n");
+    check(same, "settings save and load round-trip");
+  }
+  {
+    std::string p = plat::userDataDir() + "/selftest-settings.cfg";
+    {
+      std::ofstream f(p);
+      f << "thermal_warp = 5   # faster than real time\nfullscreen = yes\nvsync = off\nvoxel_size = 0.02\n";
+    }
+    Settings u;
+    u.load(p);
+    std::remove(p.c_str());
+    check(std::fabs(u.thermalWarp - 5) < 1e-5f && u.fullscreen && !u.vsync && std::fabs(u.voxelSize - 0.02f) < 1e-5f,
+          "settings accept inline comments and true/false words");
+  }
+  {
+    Settings b;
+    b.voxelSize = 0; b.worldX = 0; b.worldY = 1e9f; b.worldZ = -4; b.thermalWarp = -5;
+    b.threads = -3; b.width = 0; b.height = 99999; b.renderScale = 100; b.fov = 0;
+    b.exposure = 50; b.sensitivity = 0; b.volume = 5; b.uiScale = -1;
+    b.sanitize();
+    check(b.voxelSize >= 0.02f && b.voxelSize <= 0.025f && b.worldX >= 4 && b.worldY <= 16 && b.worldZ >= 4 &&
+              b.thermalWarp >= 1 && b.threads >= 0 && b.width >= 320 && b.height <= 4320 && b.renderScale <= 2 &&
+              b.fov >= 40 && b.exposure <= 4 && b.uiScale >= 0.5f && b.sensitivity > 0 && b.volume <= 1,
+          "settings sanitize clamps out-of-range values");
+  }
   // Lamp bulb should be powered.
   bool lampLit = false, fanOff = true;
   for (auto& c : comps()) {
@@ -598,6 +648,45 @@ bool Game::selftest() {
     fprintf(stderr, "  plank facing a 1100 C block reached %.0f C (radiators %zu, %.0f W)\n", tmax, sim.radiators.size(), sim.radiantTotal);
     check(tmax > 40, "radiant heat crosses an air gap");
   }
+  // External forces are accumulated once per frame and must be integrated once
+  // per frame, not once per physics substep. A 10 N/kg push for 1/60 s should
+  // add 0.167 m/s regardless of how many substeps the solver takes.
+  {
+    vec3 savedGravity = sim.gravity;
+    sim.gravity = vec3(0);
+    Volume v(2, 2, 2);
+    uint32_t c = newComp(makePart("Test cube", "Test", joints::welded));
+    for (int x = 0; x < 2; x++) for (int y = 0; y < 2; y++) for (int z = 0; z < 2; z++) v.set(x, y, z, STEEL, c);
+    Body* b = spawnBody(sim, std::move(v), vec3(2.0f, 6.5f, 2.0f));
+    if (b) {
+      b->wake();
+      b->force = vec3(10.f * b->mass, 0, 0);
+      const float v0 = b->vel.x;
+      sim.step(1.f / 60.f);
+      const float dv = b->vel.x - v0;
+      fprintf(stderr, "  unit force: dv = %.4f m/s (expect %.4f)\n", dv, 10.f / 60.f);
+      check(std::fabs(dv - 10.f / 60.f) < 0.02f, "external forces are applied once per frame");
+      int bi = sim.bodyIndex(b);
+      if (bi >= 0) sim.removeBody(bi);
+    } else {
+      check(false, "spawned a body for the force test");
+    }
+    sim.gravity = savedGravity;
+  }
+  // Re-initialising a Sim is how "new world" works: no clock, body, effect,
+  // radiator, flow field or statistic may survive it.
+  {
+    sim.time = 12.f;
+    sim.stats.burning = 7;
+    sim.radiators.push_back(Radiator{});
+    sim.events.push_back(SimEvent{});
+    sim.waterFlow.push_back(vec3(1, 2, 3));
+    sim.init(sim.cfg);
+    check(sim.time == 0 && sim.bodies.empty() && sim.debris.empty() && sim.fx.empty() && sim.events.empty() &&
+              sim.radiators.empty() && sim.waterFlow.empty() && sim.stats.burning == 0 && !sim.airReady &&
+              sim.world.countSolid() == 0,
+          "Sim::init clears every per-run system");
+  }
   fprintf(stderr, "%d failure(s)\n", fails);
   return fails == 0;
 }
@@ -610,7 +699,7 @@ void Game::drawPrompt(float cx, float cy) {
   switch (cp.type) {
     case C_SWITCH: act = "Flip switch"; break;
     case C_MOTOR: act = "Reverse motor"; break;
-    case C_CHARGE: act = cp.fuse >= 0 ? nullptr : "Light the fuse"; break;
+    case C_CHARGE: act = cp.fuse >= 0 || cp.lit ? nullptr : "Light the fuse"; break;
     case C_ROCKET: act = cp.lit ? nullptr : "Ignite"; break;
     case C_BATTERY: act = "Check charge"; break;
     case C_VALVE: act = cp.lit ? "Close valve" : "Open valve"; break;

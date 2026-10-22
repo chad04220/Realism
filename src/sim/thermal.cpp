@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <mutex>
+#include <unordered_set>
 #include "../core/jobs.h"
 #include "sim.h"
 
@@ -369,8 +370,12 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
         break;
       case T_DETONATE: {
         // Every voxel of explosive connected to this one goes up together.
+        // A hash set keeps this linear; a vector scan made a large charge
+        // kernel quadratic (tens of billions of comparisons at the 200k cap).
         std::vector<ivec3> stack{e.c}, cells;
-        std::vector<int64_t> seen{packKey(e.c.x, e.c.y, e.c.z)};
+        std::unordered_set<int64_t> seen;
+        seen.reserve(256);
+        seen.insert(packKey(e.c.x, e.c.y, e.c.z));
         while (!stack.empty() && cells.size() < 200000) {
           ivec3 c = stack.back();
           stack.pop_back();
@@ -378,10 +383,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
           for (auto& d : DIRS6) {
             ivec3 q(c.x + d[0], c.y + d[1], c.z + d[2]);
             if (v.matI(q) != CHARGE) continue;
-            int64_t k = packKey(q.x, q.y, q.z);
-            if (std::find(seen.begin(), seen.end(), k) != seen.end()) continue;
-            seen.push_back(k);
-            stack.push_back(q);
+            if (seen.insert(packKey(q.x, q.y, q.z)).second) stack.push_back(q);
           }
         }
         vec3 centre;

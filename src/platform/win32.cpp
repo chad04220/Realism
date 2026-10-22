@@ -215,7 +215,13 @@ int height() { return g_h; }
 bool focused() { return g_focus; }
 bool captured() { return g_captured; }
 void setCaptured(bool c) { if (c == g_captured) return; g_captured = c; applyClip(); }
-double now() { LARGE_INTEGER t; QueryPerformanceCounter(&t); return (double)(t.QuadPart - g_t0.QuadPart) / (double)g_freq.QuadPart; }
+double now() {
+  // --selftest skips plat::init, so the clock may not be set up yet.
+  if (g_freq.QuadPart == 0) { QueryPerformanceFrequency(&g_freq); QueryPerformanceCounter(&g_t0); }
+  LARGE_INTEGER t;
+  QueryPerformanceCounter(&t);
+  return (double)(t.QuadPart - g_t0.QuadPart) / (double)g_freq.QuadPart;
+}
 Input& input() { return g_in; }
 
 void* glProc(const char* name) {

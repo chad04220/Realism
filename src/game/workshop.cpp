@@ -1,7 +1,9 @@
 #include "workshop.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include "assemblies.h"
@@ -440,40 +442,117 @@ bool Workshop::loadBlueprint(const std::string& name) {
     statusT_ = 4;
     return true;
   }
+  // Never let a name escape the blueprint directory, and check the file size
+  // before trusting any count read out of it.
+  if (name.empty() || name.find('/') != std::string::npos || name.find('\\') != std::string::npos || name.find("..") != std::string::npos) {
+    status_ = "Invalid blueprint name";
+    statusT_ = 2;
+    return false;
+  }
   std::ifstream f(bpDir() + "/" + name + ".rbp", std::ios::binary);
   if (!f) { status_ = "Blueprint not found"; statusT_ = 2; return false; }
-  char magic[4];
+  f.seekg(0, std::ios::end);
+  const std::streamoff fileBytes = f.tellg();
+  f.seekg(0, std::ios::beg);
+  if (fileBytes < 8 || fileBytes > (std::streamoff)64 * 1024 * 1024) {
+    status_ = "Blueprint file is empty or implausibly large";
+    statusT_ = 3;
+    return false;
+  }
+  char magic[4] = {};
   f.read(magic, 4);
-  if (memcmp(magic, "RBP1", 4) != 0) return false;
-  auto r32 = [&]() { uint32_t v = 0; f.read((char*)&v, 4); return v; };
-  auto rf = [&]() { float v = 0; f.read((char*)&v, 4); return v; };
-  auto rs = [&]() { uint32_t n = r32(); std::string s(n, '\0'); f.read(s.data(), n); return s; };
-  float fileVs = rf();
-  uint32_t nc = r32();
-  std::vector<uint32_t> ids;
-  static std::vector<std::string> jointNames;  // keep joint name storage alive
-  for (uint32_t i = 0; i < nc; i++) {
+  if (!f || memcmp(magic, "RBP1", 4) != 0) {
+    status_ = "Not a Realism blueprint";
+    statusT_ = 3;
+    return false;
+  }
+  bool ok = true;
+  auto r32 = [&]() { uint32_t v = 0; if (!f.read((char*)&v, 4)) ok = false; return v; };
+  auto rf = [&]() { float v = 0; if (!f.read((char*)&v, 4)) ok = false; return v; };
+  auto rs = [&]() {
+    uint32_t n = r32();
+    if (!ok || n > 128) { ok = false; return std::string(); }
+    std::string s(n, '\0');
+    if (n && !f.read(s.data(), n)) ok = false;
+    return s;
+  };
+  const float fileVs = rf();
+  const uint32_t nc = r32();
+  if (!ok || !std::isfinite(fileVs) || fileVs <= 0 || fileVs > 1 || nc > 4096) {
+    status_ = "Blueprint header is corrupt";
+    statusT_ = 3;
+    return false;
+  }
+  // Joint names are stored by pointer in Component; a deque keeps those
+  // strings at stable addresses while more blueprints are loaded.
+  static std::deque<std::string> jointNames;
+  std::vector<Component> defs;
+  defs.reserve(nc);
+  for (uint32_t i = 0; i < nc && ok; i++) {
     Component c;
-    c.name = rs(); c.object = rs(); c.type = (CompType)r32();
+    c.name = rs();
+    c.object = rs();
+    const uint32_t rawType = r32();
+    if (rawType >= C_TYPE_COUNT) { ok = false; break; }
+    c.type = (CompType)rawType;
     jointNames.push_back(rs());
     c.joint = Joint{jointNames.back().c_str(), rf()};
-    c.axis.x = rf(); c.axis.y = rf(); c.axis.z = rf(); c.reversed = r32() != 0; c.capacity = rf(); c.fuel = rf();
+    c.axis.x = rf(); c.axis.y = rf(); c.axis.z = rf();
+    c.reversed = r32() != 0;
+    c.capacity = rf();
+    c.fuel = rf();
+    if (!std::isfinite(c.axis.x) || !std::isfinite(c.axis.y) || !std::isfinite(c.axis.z) ||
+        !std::isfinite(c.capacity) || !std::isfinite(c.fuel) || c.capacity < 0 || c.fuel < 0) {
+      ok = false;
+      break;
+    }
     if (c.type == C_BATTERY) c.charge = c.capacity;
-    ids.push_back(newComp(c));
+    defs.push_back(c);
   }
-  uint32_t nr = r32();
+  const uint32_t nr = r32();
+  if (!ok || nr > 2000000) {
+    status_ = "Blueprint part list is corrupt";
+    statusT_ = 3;
+    return false;
+  }
   struct Rec { uint16_t x, y, z; uint8_t m; uint16_t c; };
-  float scaleF = fileVs / vs;  // blueprints built at another voxel size are resampled
-  for (uint32_t i = 0; i < nr; i++) {
-    Rec r;
-    f.read((char*)&r, sizeof r);
-    if (!f) break;
+  std::vector<Rec> recs(nr);
+  if (nr) f.read((char*)recs.data(), (std::streamsize)nr * sizeof(Rec));
+  if (!f) ok = false;
+  for (const Rec& r : recs) {
+    if (r.m >= MAT_COUNT || r.c >= nc) { ok = false; break; }
+  }
+  if (!ok) {
+    status_ = "Blueprint is corrupt or truncated";
+    statusT_ = 3;
+    return false;
+  }
+  std::vector<uint32_t> ids;
+  ids.reserve(nc);
+  for (const Component& c : defs) ids.push_back(newComp(c));
+  const float scaleF = fileVs / vs;  // blueprints built at another voxel size are resampled
+  if (scaleF > 6.f) {
+    status_ = "Blueprint resolution differs too much to import";
+    statusT_ = 3;
+    return false;
+  }
+  const size_t maxCells = 4000000;
+  size_t expanded = 0;
+  for (const Rec& r : recs) {
     Cell c;
     c.mat = r.m;
     c.comp = r.c < ids.size() ? ids[r.c] : 0;
-    if (std::fabs(scaleF - 1) < 1e-3f) j->vol.put(r.x, r.y, r.z, c);
-    else {
+    if (std::fabs(scaleF - 1) < 1e-3f) {
+      j->vol.put(r.x, r.y, r.z, c);
+      expanded++;
+    } else {
       int n = std::max(1, (int)std::ceil(scaleF));
+      expanded += (size_t)n * n * n;
+      if (expanded > maxCells) {
+        status_ = "Blueprint is too large to import at this voxel size";
+        statusT_ = 3;
+        return false;
+      }
       for (int a = 0; a < n; a++) for (int b = 0; b < n; b++) for (int d = 0; d < n; d++)
         j->vol.put((int)(r.x * scaleF) + a, (int)(r.y * scaleF) + b, (int)(r.z * scaleF) + d, c);
     }

@@ -152,15 +152,27 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build
 ./build/Realism
 ```
 
-Requirements: OpenGL 4.3 and a CPU with AVX2.
+**Headless (tests and CI, no window or OpenGL)**
+```
+cmake -B build-headless -G Ninja -DCMAKE_BUILD_TYPE=Release -DREALISM_HEADLESS=ON
+cmake --build build-headless
+./build-headless/Realism --selftest
+```
+This build links no graphics libraries, so it runs on a server or in a container
+without X11 development packages or a GPU. It cannot render, so it is only for
+the self-test.
+
+Requirements for the normal build: OpenGL 4.3 and a CPU with AVX2.
 
 ## Settings and performance
 
 `settings.cfg` sits next to the executable. Changes made in the in-game menu are saved to `%APPDATA%\Realism\settings.cfg`.
 
+Values outside the supported ranges are clamped at start-up, so a typo cannot hang the game. A world larger than about 400 million voxels is refused with a message before anything is allocated: increase `voxel_size` or reduce the world extents.
+
 | Setting | Default | Notes |
 |---|---|---|
-| `voxel_size` | 0.025 | Metres per voxel. Every object is defined in metres, so you can go finer. At 0.02 the world uses about 2× the memory and simulation work. |
+| `voxel_size` | 0.025 | Metres per voxel, 0.02–0.025. Every object is defined in metres, so 0.02 resolves finer detail at about 2× the memory and simulation work. Coarser values are clamped: parts have terminals and windings thinner than 3 cm. |
 | `world_x/y/z` | 16 / 8 / 16 | World extent in metres. |
 | `render_scale` | 1.0 | Lower it for more frame rate (0.75 is a good laptop setting). |
 | `thermal_warp` | 20 | How much faster heat runs than real time. |
@@ -179,7 +191,9 @@ The defaults target a 6-core/12-thread laptop CPU (e.g. i7-10750H) with an 8 GB 
 ```
 Realism --selftest
 ```
-This builds the world and checks that:
+The self-test runs without opening a window or creating an OpenGL context, so it
+works over SSH and in CI. It builds the world and checks that:
+- settings written by the game load back unchanged, and out-of-range values are clamped;
 - the lamp's circuit is closed;
 - the fan's switch is open;
 - the campfire is burning;
@@ -191,9 +205,33 @@ This builds the world and checks that:
 - water jets from a hole in a tank at Torricelli's speed, and a released tank levels out across a basin without losing water;
 - a glowing block heats a plank across an air gap by radiation;
 - the wood stove draws warm air up its flue;
-- opening the water tower's valve sends out a jet at about √(2gh) for its head.
+- opening the water tower's valve sends out a jet at about √(2gh) for its head;
+- external forces (thrust, drag) are integrated once per frame rather than once per physics substep;
+- re-initialising the simulation clears the clock, bodies, effects, radiators, flow fields and statistics.
 
-`--script file` runs a command script (`pos`, `wait`, `tool`, `press`, `click`, `explode`, `workshop`, `blueprint`, `launch`, `title`, `menu`, `shot`, `log`, `probe x y z` for the air and radiant heat at a point), which is used for automated screenshots.
+Exit status is 0 when every check passes and 2 when one fails. `--help` lists
+all options. A headless CMake build also registers the self-test with CTest:
+```
+ctest --test-dir build-headless --output-on-failure
+```
+The `.github/workflows/build.yml` workflow builds the headless target on Linux,
+runs this self-test, and compiles the Windows build.
+
+## Project state and next steps
+
+[`HANDOFF.md`](HANDOFF.md) is the working handoff for the next developer or AI
+agent: architecture map, invariants, performance budgets, known defects and a
+prioritised route from the current vertical slice to a market-ready release.
+Read it before large changes.
+
+The simulation is the strong part: matter, heat, air, water, current and rigid
+bodies are coupled and covered by the headless self-test. The game shell around
+it is still a vertical slice. There is no save/load, no audio backend outside
+Windows, no controller or remapping support, and no in-game tutorial. Those are
+the largest gaps between this and a shippable product, and `HANDOFF.md` lists
+them in priority order.
+
+`--script file` runs a command script (`pos`, `wait`, `tool`, `press`, `click`, `explode`, `workshop`, `blueprint`, `launch`, `title`, `menu`, `shot`, `log`, `probe x y z` for the air and radiant heat at a point), which is used for automated screenshots. Scripts render frames, so they need the normal windowed build.
 
 ## Licence notes
 

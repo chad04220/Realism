@@ -1,5 +1,7 @@
 #include "build.h"
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 
 void Shaper::put(int x, int y, int z) {
   if (!v->inb(x, y, z)) return;
@@ -161,7 +163,11 @@ bool routeWire(Volume& v, const ivec3& from, const ivec3& to, uint32_t comp, uin
       q.push_back(n);
     }
   }
-  if (found < 0) return false;
+  if (found < 0) {
+    if (std::getenv("REALISM_DEBUG_WIRE"))
+      fprintf(stderr, "routeWire %d,%d,%d -> %d,%d,%d failed (%d candidates)\n", from.x, from.y, from.z, to.x, to.y, to.z, (int)q.size());
+    return false;
+  }
   for (int i = found; i >= 0; i = prev[i]) {
     int x = i % nx, z = (i / nx) % nz, y = i / (nx * nz);
     v.set(x, y, z, wmat, comp);

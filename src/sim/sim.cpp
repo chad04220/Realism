@@ -21,7 +21,20 @@ void Sim::init(const SimSettings& s) {
   fluidActive.clear();
   supportSeeds.clear();
   worldSpecials.clear();
+  supportVisit_.clear();
+  events.clear();
+  radiators.clear();
+  radiantTotal = 0;
+  waterFlow.clear();
+  waterFlowN.clear();
+  air = AirSim{};
   airReady = false;
+  // A re-init is a new world: simulation clocks, statistics and timers must
+  // not carry the previous run's state into it.
+  time = 0;
+  timeScale = 1;
+  stats = {};
+  thermalAcc_ = fluidAcc_ = electricAcc_ = airAcc_ = 0;
   g_sim = this;
 }
 
@@ -195,14 +208,24 @@ void Sim::removeWorld(int x, int y, int z, bool makeDebris, const vec3& kick) {
 // Anything no longer connected (through solid voxels) to the bedrock falls.
 void Sim::processSupport() {
   if (supportSeeds.empty()) return;
-  static std::vector<uint32_t> visit;     // flood id per world cell, lazily sized
-  static uint32_t floodId = 0;
   const size_t n = (size_t)world.nx * world.ny * world.nz;
-  if (visit.size() != n) visit.assign(n, 0);
+  const size_t words = (n + 63) / 64;
+  if (supportVisit_.size() != words) supportVisit_.assign(words, 0);
   auto lin = [&](int x, int y, int z) { return (size_t)x + (size_t)world.nx * ((size_t)z + (size_t)world.nz * y); };
+  auto visited = [&](int x, int y, int z) {
+    size_t i = lin(x, y, z);
+    return (supportVisit_[i >> 6] >> (i & 63)) & 1ull;
+  };
+  auto markVisited = [&](int x, int y, int z) {
+    size_t i = lin(x, y, z);
+    supportVisit_[i >> 6] |= 1ull << (i & 63);
+  };
+  auto unmarkVisited = [&](int x, int y, int z) {
+    size_t i = lin(x, y, z);
+    supportVisit_[i >> 6] &= ~(1ull << (i & 63));
+  };
   std::vector<int64_t> seeds;
   seeds.swap(supportSeeds);
-  const uint32_t batch = floodId + 1;
   const size_t LIMIT = 4000000;
   std::vector<ivec3> stack;
   std::vector<int64_t> list;
@@ -210,11 +233,10 @@ void Sim::processSupport() {
     ivec3 p = unpackKey(s);
     uint8_t m = world.matI(p);
     if (!world.inb(p.x, p.y, p.z) || m == AIR || !isSolid(m)) continue;
-    if (visit[lin(p.x, p.y, p.z)] >= batch) continue;
-    uint32_t id = ++floodId;
+    if (visited(p.x, p.y, p.z)) continue;
     stack.clear(); list.clear();
     stack.push_back(p);
-    visit[lin(p.x, p.y, p.z)] = id;
+    markVisited(p.x, p.y, p.z);
     bool supported = false;
     while (!stack.empty() && !supported) {
       ivec3 c = stack.back();
@@ -228,13 +250,19 @@ void Sim::processSupport() {
         if (!world.inb(xx, yy, zz)) continue;
         uint8_t nm = world.mat(xx, yy, zz);
         if (nm == AIR || !isSolid(nm)) continue;
-        uint32_t& v = visit[lin(xx, yy, zz)];
-        if (v == id) continue;
-        if (v >= batch) { supported = true; break; }
-        v = id;
+        if (visited(xx, yy, zz)) continue;
+        markVisited(xx, yy, zz);
         stack.push_back({xx, yy, zz});
       }
     }
+    // This walk is done: clear every mark it made so the next seed (and the
+    // next call) starts from a clean slate. Queued cells that were never popped
+    // matter too, otherwise a later seed could mistake them for visited.
+    for (int64_t k : list) {
+      ivec3 c = unpackKey(k);
+      unmarkVisited(c.x, c.y, c.z);
+    }
+    for (const ivec3& c : stack) unmarkVisited(c.x, c.y, c.z);
     if (!supported && !list.empty()) {
       if (list.size() <= 10) {
         for (int64_t k : list) { ivec3 c = unpackKey(k); removeWorld(c.x, c.y, c.z, true); }
@@ -243,7 +271,6 @@ void Sim::processSupport() {
       }
     }
   }
-  if (floodId > 0xF0000000u) { std::fill(visit.begin(), visit.end(), 0); floodId = 0; }
 }
 
 // ---------------------------------------------------------------- bodies

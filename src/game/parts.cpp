@@ -12,12 +12,28 @@ std::shared_ptr<Template> make(const std::string& name, const vec3& size, const 
   auto t = std::make_shared<Template>();
   t->name = name;
   t->proto = proto;
-  int nx = std::max(1, (int)std::ceil(size.x / g_vs - 1e-3f)), ny = std::max(1, (int)std::ceil(size.y / g_vs - 1e-3f)),
-      nz = std::max(1, (int)std::ceil(size.z / g_vs - 1e-3f));
+  // Author features in metres, so a shape can protrude past the nominal size
+  // by up to a voxel (a battery terminal, a heater coil). Rasterise into a
+  // slightly padded volume, then trim the empty tail: at coarse voxel sizes a
+  // tight declared size used to clip exactly those features, which silently
+  // broke terminals and wires.
+  const int pad = 2;
+  int nx = std::max(1, (int)std::ceil(size.x / g_vs - 1e-3f)) + pad,
+      ny = std::max(1, (int)std::ceil(size.y / g_vs - 1e-3f)) + pad,
+      nz = std::max(1, (int)std::ceil(size.z / g_vs - 1e-3f)) + pad;
   t->vol.resize(nx, ny, nz);
   Shaper s(&t->vol, g_vs);
   s.comp = 1;
   fn(s);
+  int hx = -1, hy = -1, hz = -1;
+  t->vol.forEach([&](int x, int y, int z, Brick*, int) {
+    hx = std::max(hx, x); hy = std::max(hy, y); hz = std::max(hz, z);
+  });
+  if (hx >= 0 && (hx + 1 < nx || hy + 1 < ny || hz + 1 < nz)) {
+    Volume trimmed(hx + 1, hy + 1, hz + 1);
+    t->vol.forEach([&](int x, int y, int z, Brick*, int) { trimmed.put(x, y, z, t->vol.get(x, y, z)); });
+    t->vol = std::move(trimmed);
+  }
   return t;
 }
 
@@ -37,8 +53,11 @@ void initParts(float vs) {
         make("Battery", vec3(0.2f, 0.1f, 0.1f), c, [&](Shaper& s) {
           s.mat = LIION; s.box(vec3(0), vec3(0.2f, 0.075f, 0.1f));
           s.mat = PLASTIC; s.box(vec3(0, 0.075f - v, 0), vec3(0.2f, 0.075f, 0.1f));
-          s.mat = TERM_NEG; s.box(vec3(v, 0.075f, 0.05f - v), vec3(2 * v, 0.075f + v, 0.05f));
-          s.mat = TERM_POS; s.box(vec3(0.2f - 2 * v, 0.075f, 0.05f - v), vec3(0.2f - v, 0.075f + v, 0.05f));
+          // Put the terminals at opposite ends with at least one empty cell
+          // between them; at coarse voxel sizes the old inset positions met in
+          // the middle and shorted the pack to itself.
+          s.mat = TERM_NEG; s.box(vec3(0, 0.075f, 0.05f - v), vec3(v, 0.075f + v, 0.05f));
+          s.mat = TERM_POS; s.box(vec3(0.2f - v, 0.075f, 0.05f - v), vec3(0.2f, 0.075f + v, 0.05f));
         }));
   }
   {  // Motor: steel can, windings around a through-shaft (output at both ends), contact tabs on top.
@@ -51,9 +70,11 @@ void initParts(float vs) {
           s.mat = MOTOR; s.cylinder(a, b, 0.045f);
           s.mat = SHAFT; s.box(vec3(0, 0.075f - v, 0.075f - v), vec3(0.2f, 0.075f + v, 0.075f + v));
           // Contact tabs at each end of the windings, poking out of the can.
+          // Start them at the winding surface: a 5 mm gap is less than a voxel
+          // at 3 cm and left the motor with no electrical connection.
           s.mat = COPPER;
-          s.box(vec3(0.05f, 0.125f, 0.075f - v), vec3(0.05f + v, 0.175f, 0.075f));
-          s.box(vec3(0.15f - v, 0.125f, 0.075f - v), vec3(0.15f, 0.175f, 0.075f));
+          s.box(vec3(0.05f, 0.12f, 0.075f - v), vec3(0.05f + v, 0.175f, 0.075f));
+          s.box(vec3(0.15f - v, 0.12f, 0.075f - v), vec3(0.15f, 0.175f, 0.075f));
         }));
   }
   for (float r : {0.12f, 0.2f}) {  // Wheels: rubber tyre, steel rim, hub. Axis x.
@@ -107,8 +128,12 @@ void initParts(float vs) {
           s.boxIf(cen - vec3(0.05f), cen + vec3(0.05f), [&](const vec3& p) { float d = length(p - cen); return d <= 0.045f && d >= 0.02f; });
           s.mat = FILAMENT; s.box(cen - vec3(v, v * 0.5f, v * 0.5f), cen + vec3(v, v * 0.5f, v * 0.5f));
           s.mat = COPPER;
-          s.box(vec3(0, 0.05f - v * 0.5f, 0.05f - v * 0.5f), vec3(0.075f - v, 0.05f + v * 0.5f, 0.05f + v * 0.5f));
-          s.box(vec3(0.075f + v, 0.05f - v * 0.5f, 0.05f - v * 0.5f), vec3(0.15f, 0.05f + v * 0.5f, 0.05f + v * 0.5f));
+          // Keep each lead at least one voxel long so coarse grids don't clip a
+          // lead away and leave the filament with only one terminal.
+          s.box(vec3(0, 0.05f - v * 0.5f, 0.05f - v * 0.5f),
+                vec3(std::max(0.05f, 0.075f - v), 0.05f + v * 0.5f, 0.05f + v * 0.5f));
+          s.box(vec3(std::min(0.1f, 0.075f + v), 0.05f - v * 0.5f, 0.05f - v * 0.5f),
+                vec3(0.15f, 0.05f + v * 0.5f, 0.05f + v * 0.5f));
         }));
   }
   {  // Heater: zig-zag nichrome on a ceramic-ish (stone) plate with copper leads.

@@ -60,14 +60,26 @@ void Sim::stepPhysics(float dtFrame) {
   stats.awake = awake;
   if (awake == 0) return;
 
+  // External forces (fans, propellers, rockets, air drag) are accumulated once
+  // per frame, so integrate them once here. Applying them inside the substep
+  // loop multiplied every thrust and drag force by the substep count, which
+  // made fast machines behave very differently depending on how many bodies
+  // happened to be awake.
+  for (auto& bp : bodies) {
+    Body& b = *bp;
+    if (b.asleep || b.frozen || b.invMass == 0) continue;
+    b.updateInertiaWorld();
+    b.vel += b.force * b.invMass * dtFrame;
+    b.angVel += b.invIworld * b.torque * dtFrame;
+  }
+
   for (int sub = 0; sub < SUB; sub++) {
     // ---- forces
     for (auto& bp : bodies) {
       Body& b = *bp;
       if (b.asleep || b.frozen || b.invMass == 0) continue;
       b.updateInertiaWorld();
-      b.vel += (gravity + b.force * b.invMass) * h;
-      b.angVel += b.invIworld * b.torque * h;
+      b.vel += gravity * h;
       // Buoyancy and drag from water the body is sitting in.
       int wet = 0;
       vec3 wetCentre;

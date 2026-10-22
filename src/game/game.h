@@ -32,7 +32,7 @@ class Game {
   struct Args {
     std::string screenshot, script;
     int frames = 0, w = 0, h = 0;
-    bool selftest = false;
+    bool selftest = false, headless = false;
     float voxelSize = 0;
   };
   Game();
