@@ -1,11 +1,17 @@
 name: release
 
-# Pushing a tag like v2.1.0 runs the self-test, builds the Windows release and
-# publishes a GitHub Release with the zip attached. The release text comes from
-# docs/releases/<version>.md (the tag without its leading "v").
+# Pushing a tag like v2.1.0 (or running this workflow by hand with a version)
+# runs the self-test, builds the Windows release and publishes a GitHub Release
+# with the zip attached, creating the tag on the built commit if needed. The
+# release text comes from docs/releases/<version>.md.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, without the v (e.g. 2.1.0)'
+        required: true
 
 permissions:
   contents: write
@@ -36,16 +42,20 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          $v = "${{ github.ref_name }}".TrimStart('v')
+          $v = "${{ inputs.version }}"
+          if (-not $v) { $v = "${{ github.ref_name }}".TrimStart('v') }
           $dir = "Realism-$v-windows-x64"
           New-Item -ItemType Directory -Force $dir | Out-Null
           Copy-Item build/Release/Realism.exe, settings.cfg, README.md, THIRD_PARTY_NOTICES.md $dir/
           Compress-Archive -Path $dir -DestinationPath "$dir.zip"
           "ZIP=$dir.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
           "NOTES=docs/releases/$v.md" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "TAG=v$v" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
-          name: Realism ${{ github.ref_name }}
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Realism ${{ env.TAG }}
           body_path: ${{ env.NOTES }}
           files: ${{ env.ZIP }}
