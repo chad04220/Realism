@@ -80,15 +80,127 @@ void main() {
 }
 )GLSL";
 
+// World data and tracing shared by the voxel shader and the sun-visibility
+// compute shader, so both see exactly the same world.
+inline const char* kWorldUniforms = R"GLSL(
+uniform usampler3D uWorldData;    // r=material g=glow b=integrity a=part hash
+uniform sampler3D uWorldDensity;  // opaque occupancy, linear filtered (smooth surfaces)
+uniform usampler3D uWorldBricks;  // 1 if a 16^3 brick has anything in it
+uniform usampler3D uWorldCells;   // 1 if a 4^3 cell has anything in it (finer empty-space skipping)
+uniform int uCellSkip;            // 0: bricks only (REALISM_NO_CELLS, for comparisons)
+uniform ivec3 uWorldDims;
+uniform vec4 uMatA[64];           // linear rgb, roughness
+uniform vec4 uMatB[64];           // metal, pattern, transparent, wet
+uniform int uSmooth;
+)GLSL";
+
+inline const char* kWorldTrace = R"GLSL(
+float worldDens(vec3 pv) { return texture(uWorldDensity, pv / vec3(uWorldDims)).r; }
+bool isTrans(uint m) { return uMatB[m].z > 0.5; }
+int gShadowSteps = 0;  // shadow-march iterations, for the cost view (REALISM_DEBUG_PASS 12)
+
+vec2 boxClip(vec3 ro, vec3 rd, vec3 lo, vec3 hi) {
+  vec3 inv = 1.0 / rd;
+  vec3 a = (lo - ro) * inv, b = (hi - ro) * inv;
+  vec3 mn = min(a, b), mx = max(a, b);
+  return vec2(max(max(mn.x, mn.y), mn.z), min(min(mx.x, mx.y), mx.z));
+}
+
+// Where a ray leaves an axis-aligned box, and the face of the voxel it then
+// enters (so a hit straight after a skip still knows which face it crossed).
+float exitBox(vec3 ro, vec3 rd, vec3 lo, vec3 hi, vec3 stp, out vec3 face) {
+  vec3 inv = 1.0 / rd;
+  vec3 a = (lo - ro) * inv, b = (hi - ro) * inv;
+  vec3 mx = max(a, b);
+  face = (mx.x <= mx.y && mx.x <= mx.z) ? vec3(-stp.x, 0, 0) : (mx.y <= mx.z ? vec3(0, -stp.y, 0) : vec3(0, 0, -stp.z));
+  return min(min(mx.x, mx.y), mx.z);
+}
+
+// Empty-space skipping through the world: whole 16^3 bricks, then 4^3 cells
+// inside occupied bricks. Returns the size of the empty block v sits in (0 if
+// v's cell holds something). Caches the last brick and cell looked up.
+int emptyBlock(ivec3 v, inout ivec3 lastBrick, inout bool brickFull, inout ivec3 lastCell, inout bool cellFull) {
+  if (v.y < 0 || any(lessThan(v, ivec3(0))) || any(greaterThanEqual(v, uWorldDims))) return 0;
+  ivec3 b = v >> 4;
+  if (b != lastBrick) { lastBrick = b; brickFull = texelFetch(uWorldBricks, b, 0).r != 0u; }
+  if (!brickFull) return 16;
+  if (uCellSkip == 0) return 0;
+  ivec3 c = v >> 2;
+  if (c != lastCell) { lastCell = c; cellFull = texelFetch(uWorldCells, c, 0).r != 0u; }
+  return cellFull ? 0 : 4;
+}
+
+// Hard sun shadow through the world grid.
+float shadowWorld(vec3 pv, vec3 dir) {
+  vec3 ro = pv;
+  vec3 rd = dir;
+  vec2 tb = boxClip(ro, rd, vec3(0.0), vec3(uWorldDims));
+  if (tb.y < 0.0) return 1.0;
+  float t = max(tb.x, 0.0) + 1e-3;
+  float tEnd = min(tb.y, 320.0);
+  vec3 stp = sign(rd), tDelta = abs(1.0 / rd);
+  vec3 p0 = ro + rd * t;
+  ivec3 v = ivec3(floor(p0));
+  vec3 side = (stp * (vec3(v) - p0) + stp * 0.5 + 0.5) * tDelta + t;
+  ivec3 lastBrick = ivec3(-999), lastCell = ivec3(-999);
+  bool brickFull = false, cellFull = false;
+  vec3 face;
+  for (int i = 0; i < 700; i++) {
+    if (t > tEnd) break;
+    gShadowSteps++;
+    int skip = emptyBlock(v, lastBrick, brickFull, lastCell, cellFull);
+    if (skip > 0) {
+      vec3 base = vec3((v / skip) * skip);
+      t = exitBox(ro, rd, base, base + float(skip), stp, face) + 1e-3;
+      p0 = ro + rd * t;
+      v = ivec3(floor(p0));
+      side = (stp * (vec3(v) - p0) + stp * 0.5 + 0.5) * tDelta + t;
+      continue;
+    }
+    if (all(greaterThanEqual(v, ivec3(0))) && all(lessThan(v, uWorldDims))) {
+      uint m = texelFetch(uWorldData, v, 0).r;
+      if (m != 0u && !isTrans(m)) {
+        if (uSmooth == 0) return 0.0;
+        // Smooth occluders: only count it if the field really is solid here.
+        if (worldDens(vec3(v) + 0.5) > 0.55) return 0.0;
+      }
+    }
+    if (side.x < side.y && side.x < side.z) { t = side.x; side.x += tDelta.x; v.x += int(stp.x); }
+    else if (side.y < side.z) { t = side.y; side.y += tDelta.y; v.y += int(stp.y); }
+    else { t = side.z; side.z += tDelta.z; v.z += int(stp.z); }
+  }
+  return 1.0;
+}
+
+)GLSL";
+
+// Sun visibility, one value per world voxel: the sun never moves, so whether
+// a point is lit can be worked out once (and again only where the world
+// changes) instead of marching a shadow ray for every pixel every frame.
+// Each work group of 8^3 covers an eighth of one 16^3 brick from uBricks.
+inline const char* kSunVisCS = R"GLSL(
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout(r8, binding = 0) uniform writeonly image3D uSunVis;
+uniform ivec4 uBricks[64];   // brick coordinates (x, y, z) to compute
+void main() {
+  ivec3 g = ivec3(gl_WorkGroupID);
+  ivec3 brick = uBricks[g.z >> 1].xyz;
+  ivec3 v = brick * 16 + ivec3(g.x, g.y, g.z & 1) * 8 + ivec3(gl_LocalInvocationID);
+  if (any(greaterThanEqual(v, uWorldDims))) return;
+  // Leave this voxel first: a lit surface's own voxel counts as lit, so
+  // filtered lookups just outside surfaces aren't darkened by it.
+  float vis = shadowWorld(vec3(v) + 0.5 + uSunDir * 0.75, uSunDir);
+  imageStore(uSunVis, v, vec4(vis));
+}
+)GLSL";
+
 // The ray marcher. #define WORLD selects the world variant.
 inline const char* kVoxelFS = R"GLSL(
 layout(location = 0) out vec4 oColor;
 
-uniform usampler3D uWorldData;    // r=material g=glow b=integrity a=part hash
-uniform sampler3D uWorldDensity;  // opaque occupancy, linear filtered (smooth surfaces)
-uniform usampler3D uWorldBricks;  // 1 if a 16^3 brick has anything in it
 uniform sampler3D uDynOcc;        // bodies, 4x coarser, for soft shadows and AO
-uniform ivec3 uWorldDims;
+uniform sampler3D uSunVis;        // precomputed sun visibility per world voxel (kSunVisCS)
+uniform int uSunVisOn;            // 0: march a shadow ray per pixel instead
 uniform float uDynScale;          // voxels per dyn-occ cell
 
 uniform usampler3D uObjData;
@@ -97,12 +209,9 @@ uniform ivec3 uObjDims;           // voxel dims (texture is dims + 2 with a 1-vo
 uniform mat4 uModel, uModelInv;
 uniform mat3 uObjRot;
 
-uniform vec4 uMatA[64];           // linear rgb, roughness
-uniform vec4 uMatB[64];           // metal, pattern, transparent, wet
 uniform int uNumLights;
 uniform vec4 uLightPos[16];       // world xyz, radius
 uniform vec4 uLightCol[16];
-uniform int uSmooth;
 uniform int uShadows;
 uniform vec4 uHover;              // xyz unused, w = part hash to highlight (-1 none)
 uniform vec3 uHoverMin, uHoverMax;
@@ -136,12 +245,13 @@ uvec4 vox(ivec3 v) {
 float dens(vec3 p) { return texture(uObjDensity, (p + 1.0) / vec3(uObjDims + 2)).r; }
 ivec3 DIMS() { return uObjDims; }
 #endif
-float worldDens(vec3 pv) { return texture(uWorldDensity, pv / vec3(uWorldDims)).r; }
 float dynOcc(vec3 pw) { return texture(uDynOcc, pw / uVS / uDynScale / vec3(uWorldDims / int(uDynScale))).r; }
 
-bool isTrans(uint m) { return uMatB[m].z > 0.5; }
 
 // ---------------------------------------------------------- marching
+// Work counters for the cost views (REALISM_DEBUG_PASS 11/12): loop
+// iterations of the primary march and of the sun-shadow march.
+int gMarchSteps = 0;
 struct Hit {
   float t;
   vec3 p;        // volume voxel space
@@ -149,13 +259,6 @@ struct Hit {
   uvec4 d;
   ivec3 cell;
 };
-
-vec2 boxClip(vec3 ro, vec3 rd, vec3 lo, vec3 hi) {
-  vec3 inv = 1.0 / rd;
-  vec3 a = (lo - ro) * inv, b = (hi - ro) * inv;
-  vec3 mn = min(a, b), mx = max(a, b);
-  return vec2(max(max(mn.x, mn.y), mn.z), min(min(mx.x, mx.y), mx.z));
-}
 
 bool refineSurface(vec3 ro, vec3 rd, float tEnter, float tMin, out float tHit) {
   float ta = max(tEnter - 1.25, tMin);
@@ -213,23 +316,22 @@ bool march(vec3 ro, vec3 rd, float tLimit, out Hit h, inout vec3 trans, inout ve
   bool inTrans = false;
   uint transMat = 0u;
 #ifdef WORLD
-  ivec3 lastBrick = ivec3(-999);
+  ivec3 lastBrick = ivec3(-999), lastCell = ivec3(-999);
+  bool brickFull = false, cellFull = false;
 #endif
   for (int i = 0; i < 1400; i++) {
     if (t > tEnd) break;
+    gMarchSteps++;
 #ifdef WORLD
-    ivec3 b = v >> 4;
-    if (v.y >= 0 && b != lastBrick) {
-      lastBrick = b;
-      if (texelFetch(uWorldBricks, b, 0).r == 0u && !inTrans) {
-        // Skip the whole empty brick.
-        vec2 bt = boxClip(ro, rd, vec3(b * 16), vec3(b * 16 + 16));
-        t = bt.y + 1e-3;
+    if (!inTrans) {
+      int skip = emptyBlock(v, lastBrick, brickFull, lastCell, cellFull);
+      if (skip > 0) {
+        // Jump to the far side of the empty brick or cell.
+        vec3 base = vec3((v / skip) * skip);
+        t = exitBox(ro, rd, base, base + float(skip), stp, face) + 1e-3;
         p0 = ro + rd * t;
         v = ivec3(floor(p0));
         side = (stp * (vec3(v) - p0) + stp * 0.5 + 0.5) * tDelta + t;
-        vec3 inv = 1.0 / rd;
-        face = vec3(0.0);
         continue;
       }
     }
@@ -305,46 +407,13 @@ bool march(vec3 ro, vec3 rd, float tLimit, out Hit h, inout vec3 trans, inout ve
   return false;
 }
 
-// Hard sun shadow through the world grid.
-float shadowWorld(vec3 pv, vec3 dir) {
-  vec3 ro = pv;
-  vec3 rd = dir;
-  vec2 tb = boxClip(ro, rd, vec3(0.0), vec3(uWorldDims));
-  if (tb.y < 0.0) return 1.0;
-  float t = max(tb.x, 0.0) + 1e-3;
-  float tEnd = min(tb.y, 320.0);
-  vec3 stp = sign(rd), tDelta = abs(1.0 / rd);
-  vec3 p0 = ro + rd * t;
-  ivec3 v = ivec3(floor(p0));
-  vec3 side = (stp * (vec3(v) - p0) + stp * 0.5 + 0.5) * tDelta + t;
-  ivec3 lastBrick = ivec3(-999);
-  for (int i = 0; i < 700; i++) {
-    if (t > tEnd) break;
-    ivec3 b = v >> 4;
-    if (b != lastBrick) {
-      lastBrick = b;
-      if (texelFetch(uWorldBricks, b, 0).r == 0u) {
-        vec2 bt = boxClip(ro, rd, vec3(b * 16), vec3(b * 16 + 16));
-        t = bt.y + 1e-3;
-        p0 = ro + rd * t;
-        v = ivec3(floor(p0));
-        side = (stp * (vec3(v) - p0) + stp * 0.5 + 0.5) * tDelta + t;
-        continue;
-      }
-    }
-    if (all(greaterThanEqual(v, ivec3(0))) && all(lessThan(v, uWorldDims))) {
-      uint m = texelFetch(uWorldData, v, 0).r;
-      if (m != 0u && !isTrans(m)) {
-        if (uSmooth == 0) return 0.0;
-        // Smooth occluders: only count it if the field really is solid here.
-        if (worldDens(vec3(v) + 0.5) > 0.55) return 0.0;
-      }
-    }
-    if (side.x < side.y && side.x < side.z) { t = side.x; side.x += tDelta.x; v.x += int(stp.x); }
-    else if (side.y < side.z) { t = side.y; side.y += tDelta.y; v.y += int(stp.y); }
-    else { t = side.z; side.z += tDelta.z; v.z += int(stp.z); }
-  }
-  return 1.0;
+// Sunlight reaching a point (voxel coords) past the world's matter: one
+// filtered lookup in the precomputed visibility, or a shadow ray as fallback.
+float sunLight(vec3 pv) {
+  if (uSunVisOn == 0) return shadowWorld(pv, uSunDir);
+  if (pv.y < 0.0) return 0.0;
+  if (any(lessThan(pv, vec3(0.0))) || any(greaterThanEqual(pv, vec3(uWorldDims)))) return 1.0;
+  return texture(uSunVis, pv / vec3(uWorldDims)).r;
 }
 
 // Soft shadow from bodies (coarse occupancy).
@@ -504,6 +573,8 @@ void main() {
   float firstT = -1.0;
   bool got = march(ro, rd, 1e6, h, trans, refl, firstT);
   if (uDebug == 2) { oColor = vec4(got ? h.n * 0.5 + 0.5 : vec3(0.0, 0.0, 0.3), 1.0); gl_FragDepth = 0.5; return; }
+  if (uDebug == 11) { oColor = vec4(vec3(float(gMarchSteps) / 1024.0), 1.0); gl_FragDepth = 0.5; return; }  // march iterations
+  if (uDebug == 12 && !got) { oColor = vec4(0.0, 0.0, 0.0, 1.0); gl_FragDepth = 1.0; return; }
   vec3 col;
   float depth = 1.0;
   if (got) {
@@ -517,10 +588,15 @@ void main() {
     vec3 pvw = pw / uVS;
     float sunVis = 1.0;
     if (uShadows != 0 && dot(nw, uSunDir) > 0.0) {
-      sunVis = shadowWorld(pvw + nw * 1.1 + uSunDir * 0.5, uSunDir);
+      sunVis = sunLight(pvw + nw * 1.1 + uSunDir * 0.5);
       if (sunVis > 0.0) sunVis *= shadowDyn(pw + nw * uVS * 1.5, uSunDir);
     }
     float ao = ambientOcclusion(pw, nw);
+    if (uDebug == 12) {  // shadow-march iterations / 1024 (read back as a work measure)
+      oColor = vec4(vec3(float(gShadowSteps) / 1024.0), 1.0);
+      gl_FragDepth = 0.5;
+      return;
+    }
     if (uDebug >= 4) {
       vec3 v = uDebug == 4 ? albedoFor(h.d, pw, nw, h.p) : uDebug == 5 ? vec3(ao) : uDebug == 6 ? vec3(sunVis) : uDebug == 8 ? h.p * 0.001 : uDebug == 9 ? gradNormal(h.p) : uDebug == 10 ? vec3(dens(h.p)) : nw;
       oColor = vec4(any(isnan(v)) || any(isinf(v)) ? vec3(1, 0, 1) : v, 1.0);

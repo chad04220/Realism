@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -65,8 +66,9 @@ bool Renderer::init(Sim* sim) {
   std::string defs = matDefines();
   std::string common = shaders::kCommon;
   bool ok = true;
-  ok &= worldShader_.build("world", shaders::kFullscreenVS, common + defs + "#define WORLD\n" + shaders::kVoxelFS);
-  ok &= bodyShader_.build("body", common + shaders::kBoxVS, common + defs + shaders::kVoxelFS);
+  const std::string world = std::string(shaders::kWorldUniforms) + shaders::kWorldTrace;
+  ok &= worldShader_.build("world", shaders::kFullscreenVS, common + defs + "#define WORLD\n" + world + shaders::kVoxelFS);
+  ok &= bodyShader_.build("body", common + shaders::kBoxVS, common + defs + world + shaders::kVoxelFS);
   ok &= debrisShader_.build("debris", common + shaders::kDebrisVS, common + shaders::kDebrisFS);
   ok &= fxShader_.build("fx", common + shaders::kFxVS, common + shaders::kFxFS);
   ok &= brightShader_.build("bright", shaders::kFullscreenVS, common + shaders::kBrightFS);
@@ -74,11 +76,27 @@ bool Renderer::init(Sim* sim) {
   ok &= compositeShader_.build("composite", shaders::kFullscreenVS, common + shaders::kCompositeFS);
   ok &= volumeShader_.build("volume", shaders::kFullscreenVS, common + shaders::kVolumeFS);
   if (!ok) return false;
+  // Precomputed sun visibility is an optimisation: without compute support
+  // (or with REALISM_NO_SUNVIS) shadows fall back to a ray per pixel.
+  sunVisOk_ = !getenv("REALISM_NO_SUNVIS") && sunVisShader_.buildCompute("sunvis", common + defs + world + shaders::kSunVisCS);
 
   const Volume& w = sim_->world;
   worldData_ = makeTex3D(GL_RGBA8UI, w.nx, w.ny, w.nz, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, false);
   worldDens_ = makeTex3D(GL_R8, w.nx, w.ny, w.nz, GL_RED, GL_UNSIGNED_BYTE, true);
   worldBricks_ = makeTex3D(GL_R8UI, w.bx, w.by, w.bz, GL_RED_INTEGER, GL_UNSIGNED_BYTE, false);
+  worldCells_ = makeTex3D(GL_R8UI, w.bx * 4, w.by * 4, w.bz * 4, GL_RED_INTEGER, GL_UNSIGNED_BYTE, false);
+  vram_ += (size_t)w.bx * w.by * w.bz * 64;
+  if (sunVisOk_) {
+    sunVis_ = makeTex3D(GL_R8, w.nx, w.ny, w.nz, GL_RED, GL_UNSIGNED_BYTE, true);
+    vram_ += (size_t)w.nx * w.ny * w.nz;
+    // Start fully lit, a 16-voxel slab at a time (no 100 MB staging buffer).
+    std::vector<uint8_t> lit((size_t)w.nx * w.ny * 16, 255);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glBindTexture(GL_TEXTURE_3D, sunVis_);
+    for (int z = 0; z < w.nz; z += 16) glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, z, w.nx, w.ny, std::min(16, w.nz - z), GL_RED, GL_UNSIGNED_BYTE, lit.data());
+    sunDirty_.assign(w.bricks.size(), 0);
+    sunOccHash_.assign(w.bricks.size(), 0);
+  }
   vram_ += (size_t)w.nx * w.ny * w.nz * 5;
   dynDims_ = {w.nx / dynScale_, w.ny / dynScale_, w.nz / dynScale_};
   dynOcc_ = makeTex3D(GL_R8, dynDims_.x, dynDims_.y, dynDims_.z, GL_RED, GL_UNSIGNED_BYTE, true);
@@ -152,8 +170,60 @@ bool Renderer::init(Sim* sim) {
     glVertexAttribDivisor(1 + a, 1);
   }
   glBindVertexArray(0);
-  glGenQueries(2, query_);
+  syncProfile_ = getenv("REALISM_PROFILE_SYNC") != nullptr;
+  glGenQueries(P_COUNT + 1, stamps_[0]);
+  glGenQueries(P_COUNT + 1, stamps_[1]);
   return true;
+}
+
+double Renderer::meanSceneRed() {
+  std::vector<float> px((size_t)rw_ * rh_ * 4);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_);
+  glReadPixels(0, 0, rw_, rh_, GL_RGBA, GL_FLOAT, px.data());
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+  double s = 0;
+  for (size_t i = 0; i < px.size(); i += 4) s += px[i];
+  return s / std::max<size_t>(1, px.size() / 4);
+}
+
+const char* Renderer::passName(int p) {
+  static const char* n[P_COUNT] = {"upload", "world", "bodies", "particles", "smoke", "post"};
+  return p >= 0 && p < P_COUNT ? n[p] : "?";
+}
+
+void Renderer::stamp(int i) {
+  if (syncProfile_) {
+    glFinish();
+    syncStamp_[i] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (i == P_COUNT) {
+      float total = 0;
+      for (int p = 0; p < P_COUNT; p++) {
+        passMs_[p] = passMs_[p] * 0.9f + (float)(syncStamp_[p + 1] - syncStamp_[p]) * 0.1f;
+        total += passMs_[p];
+      }
+      gpuMs_ = total;
+    }
+    return;
+  }
+  glQueryCounter(stamps_[stampIdx_][i], GL_TIMESTAMP);
+}
+
+void Renderer::readStamps() {
+  // The other set was issued last frame; it is normally done by now.
+  if (syncProfile_ || stampFrames_ < 2) return;
+  const int prev = stampIdx_ ^ 1;
+  GLint avail = 0;
+  glGetQueryObjectiv(stamps_[prev][P_COUNT], GL_QUERY_RESULT_AVAILABLE, &avail);
+  if (!avail) return;
+  uint64_t t[P_COUNT + 1];
+  for (int i = 0; i <= P_COUNT; i++) glGetQueryObjectui64v(stamps_[prev][i], GL_QUERY_RESULT, &t[i]);
+  float total = 0;
+  for (int i = 0; i < P_COUNT; i++) {
+    float ms = t[i + 1] > t[i] ? (t[i + 1] - t[i]) / 1e6f : 0.f;
+    passMs_[i] = passMs_[i] * 0.9f + ms * 0.1f;
+    total += passMs_[i];
+  }
+  gpuMs_ = total;
 }
 
 void Renderer::ensureTargets(int w, int h) {
@@ -210,6 +280,7 @@ void Renderer::uploadWorldBrick(int b) {
   int bx = b % w.bx, bz = (b / w.bx) % w.bz, by = b / (w.bx * w.bz);
   scratchData_.resize(BS3 * 4);
   scratchDens_.resize(BS3);
+  scratchCells_.assign(64, 0);
   const Brick* br = w.brickAt(b);
   if (!br || br->count == 0) {
     std::fill(scratchData_.begin(), scratchData_.end(), 0);
@@ -227,6 +298,7 @@ void Renderer::uploadWorldBrick(int b) {
           scratchData_[o * 4 + 2] = br->hp[l];
           scratchData_[o * 4 + 3] = partHash(br->comp[l]);
           scratchDens_[o] = densOf(m);
+          if (m) scratchCells_[(x >> 2) + 4 * ((y >> 2) + 4 * (z >> 2))] = 1;
         }
     if (!brickOcc_[b]) { brickOcc_[b] = 1; brickOccDirty_ = true; }
   }
@@ -234,6 +306,105 @@ void Renderer::uploadWorldBrick(int b) {
   glTexSubImage3D(GL_TEXTURE_3D, 0, bx * 16, by * 16, bz * 16, 16, 16, 16, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, scratchData_.data());
   glBindTexture(GL_TEXTURE_3D, worldDens_);
   glTexSubImage3D(GL_TEXTURE_3D, 0, bx * 16, by * 16, bz * 16, 16, 16, 16, GL_RED, GL_UNSIGNED_BYTE, scratchDens_.data());
+  glBindTexture(GL_TEXTURE_3D, worldCells_);
+  glTexSubImage3D(GL_TEXTURE_3D, 0, bx * 4, by * 4, bz * 4, 4, 4, 4, GL_RED_INTEGER, GL_UNSIGNED_BYTE, scratchCells_.data());
+  // Most uploads are glow (a fire's temperatures); shadows only change when
+  // what blocks light does. Compare a hash of the opaque voxels.
+  if (sunVisOk_) {
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (int i = 0; i < BS3; i++) { h ^= scratchDens_[i]; h *= 0x100000001b3ull; }
+    if (sunOccHash_[b] != h) { sunOccHash_[b] = h; markSunShadow(b); }
+  }
+}
+
+// A changed brick can change the sunlight on itself and on everything it
+// shades: the bricks down-sun of it, out to the ground.
+void Renderer::markSunShadow(int b) {
+  if (!sunVisOk_) return;
+  const Volume& w = sim_->world;
+  auto mark = [&](int x, int y, int z) {
+    if (x < 0 || y < 0 || z < 0 || x >= w.bx || y >= w.by || z >= w.bz) return;
+    int i = x + w.bx * (z + w.bz * y);
+    if (!sunDirty_[i]) { sunDirty_[i] = 1; sunQueue_.push_back(i); }
+  };
+  const vec3 sun = sim_->sunDir;
+  vec3 c(b % w.bx * 16 + 8.f, b / (w.bx * w.bz) * 16 + 8.f, (b / w.bx) % w.bz * 16 + 8.f);
+  for (float t = 0; ; t += 8) {
+    vec3 p = c - sun * t;
+    if (p.y < -16 || p.x < -32 || p.z < -32) break;
+    int x = (int)std::floor(p.x / 16), y = (int)std::floor(p.y / 16), z = (int)std::floor(p.z / 16);
+    for (int dz = -1; dz <= 1; dz++)
+      for (int dx = -1; dx <= 1; dx++) mark(x + dx, y, z + dz);
+    mark(x, y + 1, z);
+  }
+}
+
+// Everything that can be sampled: occupied bricks and their neighbours.
+void Renderer::markAllSun() {
+  if (!sunVisOk_) return;
+  const Volume& w = sim_->world;
+  sunQueue_.clear();
+  std::fill(sunDirty_.begin(), sunDirty_.end(), 0);
+  for (int y = 0; y < w.by; y++)
+    for (int z = 0; z < w.bz; z++)
+      for (int x = 0; x < w.bx; x++) {
+        bool near = false;
+        for (int dy = -1; dy <= 1 && !near; dy++)
+          for (int dz = -1; dz <= 1 && !near; dz++)
+            for (int dx = -1; dx <= 1 && !near; dx++) {
+              int xx = x + dx, yy = y + dy, zz = z + dz;
+              if (xx < 0 || yy < 0 || zz < 0 || xx >= w.bx || yy >= w.by || zz >= w.bz) continue;
+              const Brick* br = w.bricks[xx + w.bx * (zz + w.bz * yy)].get();
+              near = br && br->count > 0;
+            }
+        if (!near) continue;
+        int i = x + w.bx * (z + w.bz * y);
+        sunDirty_[i] = 1;
+        sunQueue_.push_back(i);
+      }
+}
+
+// Recompute up to maxBricks queued bricks of sun visibility on the GPU.
+void Renderer::processSun(size_t maxBricks) {
+  if (!sunVisOk_) return;
+  const Volume& w = sim_->world;
+  if (sunSmooth_ != (opt_.smooth ? 1 : 0) || length2(sunDirUsed_ - sim_->sunDir) > 1e-12f) {
+    // What counts as an occluder, or where the sun is, changed: all of it.
+    sunSmooth_ = opt_.smooth ? 1 : 0;
+    sunDirUsed_ = sim_->sunDir;
+    markAllSun();
+  }
+  if (sunQueue_.empty()) return;
+  sunVisShader_.use();
+  glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_3D, worldData_); sunVisShader_.set("uWorldData", 0);
+  glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_3D, worldDens_); sunVisShader_.set("uWorldDensity", 1);
+  glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_3D, worldBricks_); sunVisShader_.set("uWorldBricks", 2);
+  glActiveTexture(GL_TEXTURE0 + 6); glBindTexture(GL_TEXTURE_3D, worldCells_); sunVisShader_.set("uWorldCells", 6);
+  glActiveTexture(GL_TEXTURE0);
+  sunVisShader_.set("uWorldDims", ivec3(w.nx, w.ny, w.nz));
+  sunVisShader_.set("uSunDir", sim_->sunDir);
+  sunVisShader_.set("uSmooth", sunSmooth_);
+  sunVisShader_.set("uCellSkip", getenv("REALISM_NO_CELLS") ? 0 : 1);
+  setMaterials(sunVisShader_);
+  glBindImageTexture(0, sunVis_, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R8);
+  size_t n = std::min(maxBricks, sunQueue_.size());
+  size_t from = sunQueue_.size() - n;  // newest first: what just changed is what the player is looking at
+  GLint coords[64 * 4];
+  for (size_t i = from; i < sunQueue_.size();) {
+    int k = 0;
+    for (; k < 64 && i < sunQueue_.size(); k++, i++) {
+      int b = sunQueue_[i];
+      sunDirty_[b] = 0;
+      coords[k * 4 + 0] = b % w.bx;
+      coords[k * 4 + 1] = b / (w.bx * w.bz);
+      coords[k * 4 + 2] = (b / w.bx) % w.bz;
+      coords[k * 4 + 3] = 0;
+    }
+    glUniform4iv(sunVisShader_.loc("uBricks"), k, coords);
+    glDispatchCompute(2, 2, 2 * k);
+  }
+  sunQueue_.resize(from);
+  glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
 }
 
 void Renderer::uploadAllWorld() {
@@ -242,16 +413,26 @@ void Renderer::uploadAllWorld() {
   for (size_t b = 0; b < w.bricks.size(); b++) uploadWorldBrick((int)b);
   for (int b : w.dirtyList) w.dirty[b] = 0;
   w.dirtyList.clear();
+  // The whole world's sunlight, before the first frame.
+  if (brickOccDirty_) updateWorld();
+  markAllSun();
+  sunSmooth_ = opt_.smooth ? 1 : 0;
+  sunDirUsed_ = sim_->sunDir;
+  processSun(sunQueue_.size());
 }
 
 void Renderer::updateWorld() {
   Volume& w = sim_->world;
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-  size_t n = std::min<size_t>(w.dirtyList.size(), 2500);
-  for (size_t i = 0; i < n; i++) {
-    int b = w.dirtyList[i];
+  // A time budget, not a count: a blast that dirties thousands of bricks
+  // streams in over a few frames instead of stalling one.
+  auto t0 = std::chrono::steady_clock::now();
+  size_t n = 0;
+  while (n < w.dirtyList.size()) {
+    int b = w.dirtyList[n++];
     w.dirty[b] = 0;
     uploadWorldBrick(b);
+    if ((n & 63) == 0 && std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() > 3.0) break;
   }
   w.dirtyList.erase(w.dirtyList.begin(), w.dirtyList.begin() + n);
   if (brickOccDirty_) {
@@ -264,6 +445,9 @@ void Renderer::updateWorld() {
     glBindTexture(GL_TEXTURE_3D, worldBricks_);
     glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, w.bx, w.by, w.bz, GL_RED_INTEGER, GL_UNSIGNED_BYTE, gl.data());
   }
+  // Sunlight where the world changed: a few hundred bricks a frame at most
+  // (a big blast catches up over a few frames).
+  processSun(256);
 }
 
 void Renderer::buildBodyTex(Body& b, BodyGpu& g) {
@@ -618,17 +802,15 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
   w_ = winW; h_ = winH;
   int rw = std::max(64, (int)(winW * opt.renderScale)), rh = std::max(64, (int)(winH * opt.renderScale));
   ensureTargets(rw, rh);
-  // GPU timing (previous frame's result).
-  static int frames = 0;
-  if (frames++ > 1) {
-    GLint avail = 0;
-    glGetQueryObjectiv(query_[queryIdx_ ^ 1], GL_QUERY_RESULT_AVAILABLE, &avail);
-    if (avail) { uint64_t ns = 0; glGetQueryObjectui64v(query_[queryIdx_ ^ 1], GL_QUERY_RESULT, &ns); gpuMs_ = gpuMs_ * 0.9f + (ns / 1e6f) * 0.1f; }
+  readStamps();
+  stamp(P_UPLOAD);
+  {
+    auto c0 = std::chrono::steady_clock::now();
+    updateWorld();
+    updateBodies();
+    updateDynOcc();
+    uploadCpuMs_ = uploadCpuMs_ * 0.9f + std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - c0).count() * 0.1f;
   }
-  glBeginQuery(GL_TIME_ELAPSED, query_[queryIdx_]);
-  updateWorld();
-  updateBodies();
-  updateDynOcc();
   std::vector<vec4> lpos, lcol;
   gatherLights(lpos, lcol);
 
@@ -644,6 +826,11 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
     glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_3D, worldDens_); s.set("uWorldDensity", 1);
     glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_3D, worldBricks_); s.set("uWorldBricks", 2);
     glActiveTexture(GL_TEXTURE0 + 3); glBindTexture(GL_TEXTURE_3D, dynOcc_); s.set("uDynOcc", 3);
+    glActiveTexture(GL_TEXTURE0 + 6); glBindTexture(GL_TEXTURE_3D, worldCells_); s.set("uWorldCells", 6);
+    static const int cellSkip = getenv("REALISM_NO_CELLS") ? 0 : 1;
+    s.set("uCellSkip", cellSkip);
+    glActiveTexture(GL_TEXTURE0 + 7); glBindTexture(GL_TEXTURE_3D, sunVis_); s.set("uSunVis", 7);
+    s.set("uSunVisOn", sunVisOk_ && sunSmooth_ == (opt.smooth ? 1 : 0) ? 1 : 0);
     s.set("uWorldDims", ivec3(sim_->world.nx, sim_->world.ny, sim_->world.nz));
     s.set("uDynScale", (float)dynScale_);
     s.set("uSmooth", opt.smooth ? 1 : 0);
@@ -672,6 +859,7 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
   };
 
   // ---- world (full screen; writes depth for every pixel)
+  stamp(P_WORLD);
   worldShader_.use();
   setCommon(worldShader_, cam, time);
   setMaterials(worldShader_);
@@ -683,6 +871,7 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
   glDepthFunc(GL_LESS);
 
   // ---- bodies (boxes ray-marched in local space)
+  stamp(P_BODIES);
   bodyShader_.use();
   setCommon(bodyShader_, cam, time);
   setMaterials(bodyShader_);
@@ -740,6 +929,7 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
   glDisable(GL_CULL_FACE);
 
   // ---- debris and effects
+  stamp(P_PARTICLES);
   drawDebris(cam, time);
   glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_);
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, depthCopyFbo_);
@@ -748,10 +938,12 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
   drawFx(cam, time);
 
   // ---- smoke, steam and heat haze
+  stamp(P_VOLUMES);
   bool vol = opt.volumetrics && sim_->airReady;
   if (vol) { uploadAir(); drawVolumes(cam, time); }
 
   // ---- bloom + composite
+  stamp(P_POST);
   if (opt.bloom) bloom();
   ensureOutput(winW, winH);
   glBindFramebuffer(GL_FRAMEBUFFER, ldrFbo_);
@@ -778,8 +970,22 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
   glBlitFramebuffer(0, 0, winW, winH, 0, 0, winW, winH, GL_COLOR_BUFFER_BIT, GL_NEAREST);
   buildBackdrop();
   glViewport(0, 0, winW, winH);
-  glEndQuery(GL_TIME_ELAPSED);
-  queryIdx_ ^= 1;
+  stamp(P_COUNT);
+  stampIdx_ ^= 1;
+  stampFrames_++;
   if (getenv("REALISM_DEBUG_GL")) { GLenum e; while ((e = glGetError()) != 0) fprintf(stderr, "GL error 0x%x\n", e); }
   glActiveTexture(GL_TEXTURE0);
+}
+
+bool Renderer::vramInfo(int& totalMB, int& freeMB) const {
+  // Mesa answers these queries too, with numbers that mean nothing.
+  const char* vendor = (const char*)glGetString(GL_VENDOR);
+  if (!vendor || !strstr(vendor, "NVIDIA")) return false;
+  GLint total = 0, avail = 0;
+  while (glGetError() != GL_NO_ERROR) {}
+  glGetIntegerv(GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX, &total);
+  glGetIntegerv(GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX, &avail);
+  if (glGetError() != GL_NO_ERROR || total <= 0) return false;
+  totalMB = total / 1024; freeMB = avail / 1024;  // the queries report KB
+  return true;
 }

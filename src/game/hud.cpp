@@ -257,12 +257,18 @@ void Game::drawToasts(float dt) {
 
 void Game::drawStats() {
   float s = scale();
-  float x = 18 * s, y = height() - 230 * s, w = 330 * s, h = 190 * s;
+  float x = 18 * s, y = height() - 268 * s, w = 360 * s, h = 228 * s;
   rectBorder(x, y, w, h, theme::panel, theme::line, 10 * s);
   char b[160];
   float yy = y + 10 * s;
   auto ln = [&](const char* t) { text(x + 12 * s, yy, t, 13 * s, theme::dim); yy += 19 * s; };
   snprintf(b, sizeof b, "%.0f fps \xC2\xB7 GPU %.1f ms \xC2\xB7 %d bodies drawn", fps_, ren.gpuMs(), ren.bodiesDrawn); ln(b);
+  snprintf(b, sizeof b, "GPU: world %.1f \xC2\xB7 bodies %.1f \xC2\xB7 smoke %.1f \xC2\xB7 post %.1f", ren.passMs(Renderer::P_WORLD),
+           ren.passMs(Renderer::P_BODIES), ren.passMs(Renderer::P_VOLUMES), ren.passMs(Renderer::P_POST)); ln(b);
+  snprintf(b, sizeof b, "Render %d\xC3\x97%d%s \xC2\xB7 uploads %.1f ms CPU", ren.renderWidth(), ren.renderHeight(),
+           dynScale_ < 0.999f ? " (dynamic)" : "", ren.uploadCpuMs()); ln(b);
+  int vt, vf;
+  if (ren.vramInfo(vt, vf)) { snprintf(b, sizeof b, "VRAM %d of %d MB in use", vt - vf, vt); ln(b); }
   snprintf(b, sizeof b, "Physics %.1f ms \xC2\xB7 heat %.1f ms \xC2\xB7 fluid %.1f ms", sim.stats.physicsMs, sim.stats.thermalMs, sim.stats.fluidMs); ln(b);
   snprintf(b, sizeof b, "Bodies %zu (%d awake) \xC2\xB7 contacts %d", sim.bodies.size(), sim.stats.awake, sim.stats.contacts); ln(b);
   snprintf(b, sizeof b, "Debris %zu \xC2\xB7 effects %zu \xC2\xB7 fluid cells %zu", sim.debris.size(), sim.fx.size(), sim.fluidActive.size()); ln(b);
@@ -343,7 +349,7 @@ void Game::drawMenu() {
   }
   // Settings: a glass sheet with tabs.
   rect(0, 0, W, H, Color(0.02f, 0.03f, 0.05f, 0.45f));
-  float w = 700 * s, h = 600 * s, x = W * 0.5f - w * 0.5f, y = H * 0.5f - h * 0.5f;
+  float w = 700 * s, h = 680 * s, x = W * 0.5f - w * 0.5f, y = H * 0.5f - h * 0.5f;
   shadow(x, y, w, h, 20 * s, 34 * s, 0.55f);
   glass(x, y, w, h, theme::panelHi, theme::line, 20 * s);
   text(x + 36 * s, y + 28 * s, "Settings", 28 * s, theme::text, 0, 0.06f);
@@ -373,6 +379,12 @@ void Game::drawMenu() {
     yy += 46 * s;
     if (slider("Render scale", bx, yy, bw, ropt.renderScale, 0.4f, 1.5f, "%.2f\xC3\x97")) settings.renderScale = ropt.renderScale;
     yy += 52 * s;
+    toggle("Dynamic resolution", bx, yy, bw, settings.dynamicRes);
+    yy += 38 * s;
+    if (settings.dynamicRes) {
+      slider("Target frame rate", bx, yy, bw, settings.targetFps, 30, 144, "%.0f fps");
+      yy += 52 * s;
+    }
     if (slider("Exposure", bx, yy, bw, ropt.exposure, 0.5f, 2.f, "%.2f")) settings.exposure = ropt.exposure;
     yy += 52 * s;
     float fovDeg = cam.fov * 180 / PI;
@@ -426,7 +438,7 @@ bool Game::selftest() {
     Settings s;
     s.voxelSize = 0.025f; s.worldX = 12; s.worldY = 6; s.worldZ = 14; s.thermalWarp = 7;
     s.threads = 3; s.width = 1280; s.height = 720; s.fullscreen = true; s.vsync = false;
-    s.renderScale = 0.75f; s.smooth = false; s.shadows = true; s.bloom = false; s.volumetrics = true;
+    s.renderScale = 0.75f; s.dynamicRes = false; s.targetFps = 90; s.smooth = false; s.shadows = true; s.bloom = false; s.volumetrics = true;
     s.fov = 61; s.exposure = 1.5f; s.uiScale = 1.25f; s.sensitivity = 2; s.invertY = true; s.volume = 0.5f;
     s.save(p);
     Settings t;
@@ -436,7 +448,8 @@ bool Game::selftest() {
                 std::fabs(t.worldY - s.worldY) < 1e-5f && std::fabs(t.worldZ - s.worldZ) < 1e-5f &&
                 std::fabs(t.thermalWarp - s.thermalWarp) < 1e-5f && t.threads == s.threads &&
                 t.width == s.width && t.height == s.height && t.fullscreen == s.fullscreen && t.vsync == s.vsync &&
-                std::fabs(t.renderScale - s.renderScale) < 1e-5f && t.smooth == s.smooth && t.shadows == s.shadows &&
+                std::fabs(t.renderScale - s.renderScale) < 1e-5f && t.dynamicRes == s.dynamicRes &&
+                std::fabs(t.targetFps - s.targetFps) < 1e-5f && t.smooth == s.smooth && t.shadows == s.shadows &&
                 t.bloom == s.bloom && t.volumetrics == s.volumetrics && std::fabs(t.fov - s.fov) < 1e-5f &&
                 std::fabs(t.exposure - s.exposure) < 1e-5f && std::fabs(t.uiScale - s.uiScale) < 1e-5f &&
                 std::fabs(t.sensitivity - s.sensitivity) < 1e-5f && t.invertY == s.invertY &&
@@ -1227,4 +1240,86 @@ void Game::drawSavesPage() {
     if (title_) menu_ = false; else menuPage_ = "main";
   }
   text(bx + bw, y + h - 52 * s, "F5 quicksave  \xC2\xB7  F9 quickload", 13 * s, theme::faint, 2);
+}
+
+// ----------------------------------------------------------------- benchmark
+
+// A fixed tour of views that stress different parts of the renderer. Each is
+// warmed up, then measured; GPU time per pass comes from timestamp queries.
+void Game::benchmark() {
+  struct View { const char* name; vec3 eye, target; };
+  const float g = scene.groundY;
+  const View views[] = {
+      {"spawn", scene.spawn + vec3(0, 1.62f, 0), scene.spawn + vec3(0, 1.4f, -4)},
+      {"overview", vec3(8, g + 6.5f, 17.5f), vec3(8, g, 7)},
+      {"lawn, grazing", vec3(0.6f, g + 0.25f, 0.6f), vec3(15, g + 0.15f, 15)},
+      {"shed", vec3(7.6f, g + 1.62f, 8.2f), vec3(4.4f, g + 2.0f, 3.9f)},
+      {"tree crown", vec3(11.0f, g + 1.0f, 6.6f), vec3(12.3f, g + 2.6f, 4.6f)},
+      {"pond", vec3(10.3f, g + 1.62f, 13.4f), vec3(12.0f, g, 11.6f)},
+  };
+  // REALISM_BENCH_VIEWS="0,2" picks views; REALISM_BENCH_FRAMES sets the
+  // measured frames per view (for quick comparisons while optimising).
+  const int WARM = 20, MEASURE = getenv("REALISM_BENCH_FRAMES") ? std::max(1, atoi(getenv("REALISM_BENCH_FRAMES"))) : 90;
+  std::string pick = getenv("REALISM_BENCH_VIEWS") ? getenv("REALISM_BENCH_VIEWS") : "";
+  int viewIndex = -1, viewsRun = 0;
+  char line[512];
+  std::string report;
+  snprintf(line, sizeof line, "Realism %s benchmark: %s | %d x %d window, render scale %.2f, %.1f cm voxels\n", REALISM_VERSION,
+           (const char*)glGetString(GL_RENDERER), plat::width(), plat::height(), ropt.renderScale, sim.vs * 100);
+  report += line;
+  snprintf(line, sizeof line, "%-15s %8s %8s %7s %7s %7s %7s %7s %7s %7s\n", "view", "frame ms", "GPU ms", "upload", "world",
+           "bodies", "partcl", "smoke", "post", "CPU up");
+  report += line;
+  title_ = false;
+  menu_ = help_ = false;
+  mode_ = M_PLAY;
+  pl_.fly = true;
+  double sumFrame = 0, sumGpu = 0;
+  for (const View& v : views) {
+    viewIndex++;
+    if (!pick.empty() && ("," + pick + ",").find("," + std::to_string(viewIndex) + ",") == std::string::npos) continue;
+    viewsRun++;
+    vec3 d = normalize(v.target - v.eye);
+    pl_.pos = v.eye - vec3(0, pl_.eye, 0);
+    pl_.vel = vec3(0);
+    pl_.yaw = std::atan2(d.x, -d.z);
+    pl_.pitch = std::asin(std::clamp(d.y, -1.f, 1.f));
+    double t0 = 0;
+    double pass[Renderer::P_COUNT] = {};
+    double gpu = 0;
+    for (int f = 0; f < WARM + MEASURE; f++) {
+      if (!plat::pump()) return;
+      if (f == WARM) t0 = plat::now();
+      scriptIn_ = plat::Input{};
+      frame(1.f / 60.f);
+      plat::swap();
+      if (f >= WARM) {
+        gpu += ren.gpuMs();
+        for (int p = 0; p < Renderer::P_COUNT; p++) pass[p] += ren.passMs(p);
+      }
+    }
+    double frameMs = (plat::now() - t0) * 1000.0 / MEASURE;
+    if (getenv("REALISM_DEBUG_PASS") && (atoi(getenv("REALISM_DEBUG_PASS")) == 11 || atoi(getenv("REALISM_DEBUG_PASS")) == 12))
+      fprintf(stderr, "  %s: %.1f %s steps per pixel\n", v.name, ren.meanSceneRed() * 1024.0,
+              atoi(getenv("REALISM_DEBUG_PASS")) == 11 ? "march" : "shadow");
+    sumFrame += frameMs;
+    sumGpu += gpu / MEASURE;
+    snprintf(line, sizeof line, "%-15s %8.2f %8.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f\n", v.name, frameMs, gpu / MEASURE,
+             pass[0] / MEASURE, pass[1] / MEASURE, pass[2] / MEASURE, pass[3] / MEASURE, pass[4] / MEASURE, pass[5] / MEASURE,
+             ren.uploadCpuMs());
+    report += line;
+    fprintf(stderr, "%s", line);
+  }
+  const int nv = std::max(1, viewsRun);
+  snprintf(line, sizeof line, "mean: %.2f ms per frame (%.0f fps), %.2f ms GPU\n", sumFrame / nv, 1000.0 / (sumFrame / nv), sumGpu / nv);
+  report += line;
+  int vt, vf;
+  if (ren.vramInfo(vt, vf)) {
+    snprintf(line, sizeof line, "VRAM: %d of %d MB in use\n", vt - vf, vt);
+    report += line;
+  }
+  fprintf(stderr, "\n%s", report.c_str());
+  std::string path = plat::userDataDir() + "/benchmark.txt";
+  std::ofstream(path) << report;
+  fprintf(stderr, "written to %s\n", path.c_str());
 }

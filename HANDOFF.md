@@ -300,6 +300,31 @@ Target budgets for the reference laptop at 1080p, default world:
   ≤ 0.5 ms. These are aspirational until measured; add a benchmark mode first.
 - Memory: ≤ 1.5 GB RSS and ≤ 1.5 GB VRAM at 0.025 m with a busy scene.
 - No allocation in the per-frame hot path except bounded FX/debris/event deques.
+
+### GPU path (added after 2.2.0, aimed at an RTX 3070 / 8 GB)
+
+- `--benchmark` (hud.cpp `Game::benchmark`) renders six fixed views and prints
+  GPU ms per pass from `GL_TIMESTAMP` queries read a frame late. On Mesa,
+  timestamps are unreliable; set `REALISM_PROFILE_SYNC=1` (glFinish per pass).
+  `REALISM_BENCH_FRAMES` and `REALISM_BENCH_VIEWS=0,2` shorten runs.
+  `REALISM_DEBUG_PASS=11` / `12` print march / shadow steps per pixel, which is a
+  hardware-independent measure to use when only llvmpipe is available.
+- Empty space skipping is two levels: 16³ bricks (`uWorldBricks`), then 4³ cells
+  (`uWorldCells`, an R8UI texture at 1/4 resolution filled in
+  `uploadWorldBrick`). It cut march steps by 15–50% and shadow steps by 25–47%
+  on the benchmark views. `REALISM_NO_CELLS=1` turns it off for A/B tests.
+- Sun shadows are cached per voxel in `sunVis_` (R8, linearly filtered), written
+  by the `kSunVisCS` compute shader. A brick is re-marked only when its
+  opaque density hash changes (`sunOccHash_`), not on glow-only uploads, and
+  the bricks in its shadow are re-marked too. At most 256 bricks are
+  recomputed per frame. A change of sun direction or of smooth mode recomputes
+  everything. `REALISM_NO_SUNVIS=1` falls back to per-pixel shadow rays.
+- World brick uploads have a 3 ms CPU budget per frame (`updateWorld`).
+- Dynamic resolution (`Game::updateDynamicRes`) scales the render size every
+  0.5 s in 0.05 steps against `target_fps`; it is off in scripted runs and the benchmark.
+- The world pass dominates (about 75% of GPU time on llvmpipe). Next candidates:
+  front-face body boxes with early depth, half-resolution volumetrics upsample
+  quality, and an upscaler (P8).
 - Startup to interactive title ≤ 5 s on the reference machine.
 
 The project currently allocates a `sizeof(Brick)` (~160 KB) brick whenever a

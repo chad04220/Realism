@@ -80,6 +80,14 @@ typedef ptrdiff_t GLintptr;
 #define GL_COMPILE_STATUS 0x8B81
 #define GL_LINK_STATUS 0x8B82
 #define GL_INFO_LOG_LENGTH 0x8B84
+#define GL_TIMESTAMP 0x8E28
+#define GL_NO_ERROR 0
+#define GL_COMPUTE_SHADER 0x91B9
+#define GL_WRITE_ONLY 0x88B9
+#define GL_TEXTURE_FETCH_BARRIER_BIT 0x00000008
+#define GL_SHADER_IMAGE_ACCESS_BARRIER_BIT 0x00000020
+#define GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX 0x9048
+#define GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX 0x9049
 #define GL_R8 0x8229
 #define GL_RG8 0x822B
 #define GL_R16F 0x822D
@@ -202,7 +210,12 @@ typedef ptrdiff_t GLintptr;
   X(void, BeginQuery, GLenum, GLuint) \
   X(void, EndQuery, GLenum) \
   X(void, GetQueryObjectiv, GLuint, GLenum, GLint*) \
-  X(void, GetQueryObjectui64v, GLuint, GLenum, uint64_t*)
+  X(void, GetQueryObjectui64v, GLuint, GLenum, uint64_t*) \
+  X(void, QueryCounter, GLuint, GLenum) \
+  X(void, DispatchCompute, GLuint, GLuint, GLuint) \
+  X(void, BindImageTexture, GLuint, GLuint, GLint, GLboolean, GLint, GLenum, GLenum) \
+  X(void, MemoryBarrier, GLbitfield) \
+  X(void, Uniform4iv, GLint, GLsizei, const GLint*)
 
 #define GL_DECLARE(ret, name, ...) typedef ret(GLAPIENTRY* PFN_gl##name)(__VA_ARGS__); extern PFN_gl##name gl##name;
 GL_FUNCS(GL_DECLARE)

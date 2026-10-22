@@ -7,6 +7,7 @@
 class Shader {
  public:
   bool build(const char* name, const std::string& vs, const std::string& fs);
+  bool buildCompute(const char* name, const std::string& cs);
   void use() const { glUseProgram(prog_); }
   GLint loc(const char* n);
   void set(const char* n, int v) { glUniform1i(loc(n), v); }

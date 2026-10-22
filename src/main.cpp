@@ -31,6 +31,7 @@ void usage(FILE* out) {
           "  --frames <n>        Frames to render before the screenshot (default 1)\n"
           "  --size <w> <h>      Window size in pixels\n"
           "  --voxel <metres>    Voxel size, 0.02 or 0.025 (overrides settings.cfg)\n"
+          "  --benchmark         Render a fixed set of views, print GPU time per pass, exit\n"
           "  -h, --help          Show this help and exit\n"
           "  --version           Print the version and exit\n",
           REALISM_VERSION);
@@ -72,6 +73,7 @@ int main(int argc, char** argv) {
     else if (a == "--headless") args.headless = true;
     else if (a == "--selftest") args.selftest = true;
     else if (a == "--shot") args.screenshot = value("--shot");
+    else if (a == "--benchmark") args.benchmark = true;
     else if (a == "--script") args.script = value("--script");
     else if (a == "--frames") {
       long n = 0;

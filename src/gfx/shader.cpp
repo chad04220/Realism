@@ -15,7 +15,7 @@ static GLuint compile(GLenum type, const std::string& src, const char* name) {
     glGetShaderiv(s, GL_INFO_LOG_LENGTH, &len);
     std::string log(len > 1 ? len : 1, '\0');
     glGetShaderInfoLog(s, len, nullptr, log.data());
-    Shader::lastError = std::string(name) + (type == GL_VERTEX_SHADER ? " (vertex): " : " (fragment): ") + log;
+    Shader::lastError = std::string(name) + (type == GL_VERTEX_SHADER ? " (vertex): " : type == GL_COMPUTE_SHADER ? " (compute): " : " (fragment): ") + log;
     fprintf(stderr, "%s\n", Shader::lastError.c_str());
     glDeleteShader(s);
     return 0;
@@ -32,6 +32,27 @@ bool Shader::build(const char* name, const std::string& vsrc, const std::string&
   glLinkProgram(prog_);
   glDeleteShader(v);
   glDeleteShader(f);
+  GLint ok = 0;
+  glGetProgramiv(prog_, GL_LINK_STATUS, &ok);
+  if (!ok) {
+    GLint len = 0;
+    glGetProgramiv(prog_, GL_INFO_LOG_LENGTH, &len);
+    std::string log(len > 1 ? len : 1, '\0');
+    glGetProgramInfoLog(prog_, len, nullptr, log.data());
+    lastError = std::string(name) + " (link): " + log;
+    fprintf(stderr, "%s\n", lastError.c_str());
+    return false;
+  }
+  return true;
+}
+
+bool Shader::buildCompute(const char* name, const std::string& csrc) {
+  GLuint c = compile(GL_COMPUTE_SHADER, csrc, name);
+  if (!c) return false;
+  prog_ = glCreateProgram();
+  glAttachShader(prog_, c);
+  glLinkProgram(prog_);
+  glDeleteShader(c);
   GLint ok = 0;
   glGetProgramiv(prog_, GL_LINK_STATUS, &ok);
   if (!ok) {

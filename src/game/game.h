@@ -34,7 +34,7 @@ class Game {
   struct Args {
     std::string screenshot, script;
     int frames = 0, w = 0, h = 0;
-    bool selftest = false, headless = false;
+    bool selftest = false, headless = false, benchmark = false;
     float voxelSize = 0;
   };
   Game();
@@ -115,6 +115,7 @@ class Game {
   void saveScreenshot(const std::string& path);
   void runScriptLine(const std::string& line, bool& quit);
   bool selftest();
+  void benchmark();
   void toggleSwitch(int bodyIndex, uint32_t comp);
   void toggleValve(uint32_t comp, int bodyIndex, const ivec3& nearCell);
   void detonateCharge(int bodyIndex, uint32_t comp);
@@ -166,6 +167,8 @@ class Game {
   float flash_ = 0, shake_ = 0;
   double lastTime_ = 0;
   float fps_ = 60, frameMs_ = 16;
+  float dynScale_ = 1, dynTimer_ = 0;  // dynamic resolution: fraction of the chosen render scale
+  void updateDynamicRes(float dt);
   float time_ = 0;
   bool quit_ = false;
   float autosaveTimer_ = 0;

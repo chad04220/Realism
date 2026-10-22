@@ -66,6 +66,8 @@ void Settings::load(const std::string& path) {
     else if (k == "fullscreen") flag(fullscreen);
     else if (k == "vsync") flag(vsync);
     else if (k == "render_scale") number(renderScale);
+    else if (k == "dynamic_resolution") flag(dynamicRes);
+    else if (k == "target_fps") number(targetFps);
     else if (k == "smooth_surfaces") flag(smooth);
     else if (k == "shadows") flag(shadows);
     else if (k == "bloom") flag(bloom);
@@ -94,6 +96,7 @@ void Settings::sanitize() {
   width = std::clamp(width, 320, 7680);
   height = std::clamp(height, 240, 4320);
   renderScale = clampF(renderScale, 0.3f, 2.f);
+  targetFps = clampF(targetFps, 20.f, 240.f);
   fov = clampF(fov, 40.f, 120.f);
   exposure = clampF(exposure, 0.25f, 4.f);
   uiScale = clampF(uiScale, 0.5f, 3.f);
@@ -114,6 +117,8 @@ void Settings::save(const std::string& path) const {
   f << "width = " << width << "\nheight = " << height << "\n";
   f << "fullscreen = " << (fullscreen ? 1 : 0) << "\nvsync = " << (vsync ? 1 : 0) << "\n";
   f << "render_scale = " << renderScale << "     # 1.0 = native; lower for speed\n";
+  f << "dynamic_resolution = " << (dynamicRes ? 1 : 0) << "  # drop below render_scale when the GPU falls behind target_fps\n";
+  f << "target_fps = " << targetFps << "\n";
   f << "smooth_surfaces = " << (smooth ? 1 : 0) << "\nshadows = " << (shadows ? 1 : 0) << "\nbloom = " << (bloom ? 1 : 0) << "\nvolumetrics = " << (volumetrics ? 1 : 0) << "\n";
   f << "fov = " << fov << "\nexposure = " << exposure << "\nui_scale = " << uiScale << "\n";
   f << "# Controls and sound\n";

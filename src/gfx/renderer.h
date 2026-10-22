@@ -36,6 +36,18 @@ class Renderer {
   void render(const Camera& cam, const RenderOptions& opt, const HoverInfo& hover, float time, float flash, int winW, int winH);
   void uploadAllWorld();
   float gpuMs() const { return gpuMs_; }
+  // GPU time of each part of the frame (ms, smoothed), measured with
+  // timestamp queries a frame behind so the CPU never waits on the GPU.
+  enum Pass { P_UPLOAD, P_WORLD, P_BODIES, P_PARTICLES, P_VOLUMES, P_POST, P_COUNT };
+  static const char* passName(int p);
+  float passMs(int p) const { return passMs_[p]; }
+  float uploadCpuMs() const { return uploadCpuMs_; }
+  int renderWidth() const { return rw_; }
+  // Video memory in MB from GL_NVX_gpu_memory_info (NVIDIA only); false elsewhere.
+  bool vramInfo(int& totalMB, int& freeMB) const;
+  // Mean of the HDR frame's red channel (for the step-count debug views).
+  double meanSceneRed();
+  int renderHeight() const { return rh_; }
   GLuint backdropTex() const { return glassTex_[2]; }  // blurred frame, for frosted-glass UI
   size_t vramBytes() const { return vram_; }
   int bodiesDrawn = 0;
@@ -53,6 +65,9 @@ class Renderer {
   };
   void ensureTargets(int w, int h);
   void uploadWorldBrick(int b);
+  void markSunShadow(int b);
+  void markAllSun();
+  void processSun(size_t maxBricks);
   void updateWorld();
   void updateBodies();
   void updateDynOcc();
@@ -77,7 +92,18 @@ class Renderer {
   void buildBackdrop();
   void uploadAir();
   void drawVolumes(const Camera& cam, float time);
-  GLuint worldData_ = 0, worldDens_ = 0, worldBricks_ = 0, dynOcc_ = 0;
+  GLuint worldData_ = 0, worldDens_ = 0, worldBricks_ = 0, worldCells_ = 0, dynOcc_ = 0;
+  std::vector<uint8_t> scratchCells_;
+  // Precomputed sun visibility (kSunVisCS): an R8 value per world voxel,
+  // recomputed for the bricks a change can shade.
+  Shader sunVisShader_;
+  bool sunVisOk_ = false;
+  GLuint sunVis_ = 0;
+  std::vector<uint8_t> sunDirty_;
+  std::vector<uint64_t> sunOccHash_;  // per brick: hash of its opaque voxels when sunlight was last marked
+  std::vector<int> sunQueue_;
+  int sunSmooth_ = -1;
+  vec3 sunDirUsed_;
   std::vector<uint8_t> brickOcc_;
   bool brickOccDirty_ = true;
   std::vector<uint8_t> dynCpu_;
@@ -94,8 +120,17 @@ class Renderer {
   GLuint depthCopyFbo_ = 0, depthCopyTex_ = 0;
   struct Level { GLuint fbo, tex; int w, h; };
   std::vector<Level> bloomLevels_;
-  GLuint query_[2] = {0, 0};
-  int queryIdx_ = 0;
+  GLuint stamps_[2][P_COUNT + 1] = {};
+  int stampIdx_ = 0, stampFrames_ = 0;
+  float passMs_[P_COUNT] = {};
+  float uploadCpuMs_ = 0;
+  // REALISM_PROFILE_SYNC=1: wait for the GPU at each pass boundary and time
+  // with the CPU clock instead (exact per pass, but serialises the frame;
+  // needed on drivers that defer all drawing to the swap, like llvmpipe).
+  bool syncProfile_ = false;
+  double syncStamp_[P_COUNT + 1] = {};
+  void stamp(int i);
+  void readStamps();
   float gpuMs_ = 0;
   size_t vram_ = 0;
   RenderOptions opt_;

@@ -11,6 +11,8 @@ struct Settings {
   int width = 1600, height = 900;
   bool fullscreen = false, vsync = true;
   float renderScale = 1.0f;
+  bool dynamicRes = true;      // lower the render scale while the GPU can't hold targetFps
+  float targetFps = 60;
   bool smooth = true, shadows = true, bloom = true, volumetrics = true;
   float fov = 72, exposure = 1.0f;
   float uiScale = 1.0f;

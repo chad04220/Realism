@@ -194,16 +194,21 @@ Values outside the supported ranges are clamped at start-up, so a typo cannot ha
 | `voxel_size` | 0.025 | Metres per voxel, 0.02–0.025. Every object is defined in metres, so 0.02 resolves finer detail at about 2× the memory and simulation work. Coarser values are clamped: parts have terminals and windings thinner than 3 cm. |
 | `world_x/y/z` | 16 / 8 / 16 | World extent in metres. |
 | `render_scale` | 1.0 | Lower it for more frame rate (0.75 is a good laptop setting). |
+| `dynamic_resolution`, `target_fps` | on, 60 | While the GPU can't hold `target_fps`, render below `render_scale` (down to 0.5× of the window), then climb back. Also in the in-game settings. |
 | `thermal_warp` | 20 | How much faster heat runs than real time. |
 | `threads` | 0 | 0 uses every hardware thread. |
 | `smooth_surfaces`, `shadows`, `bloom`, `volumetrics` | on | Also in the in-game settings. `volumetrics` is the ray-marched smoke, steam and heat haze. |
 
 The defaults target a 6-core/12-thread laptop CPU (e.g. i7-10750H) with an 8 GB GPU:
 - About 330 MB of system RAM for the world.
-- About 700 MB of VRAM for its 3D textures.
+- About 850 MB of VRAM for its 3D textures (about 1.6 GB at 0.02 m), well inside an 8 GB card such as an RTX 3070.
 - Heat, contact generation, explosions and circuits run across all threads.
 
-**F3** shows live timings.
+**F3** shows live timings, including GPU time per render pass, the current render resolution and, on NVIDIA, VRAM in use.
+
+### Benchmark
+
+`Realism --benchmark` renders six fixed views (110 frames each) with dynamic resolution off, prints a table of frame time and GPU time per pass, and writes it to `benchmark.txt` in the user-data folder (`%APPDATA%\Realism`). Use `--size 1920 1080` to pin the resolution. Run it before and after changing a setting or updating the game, and include the file when reporting a performance problem.
 
 ## Testing
 

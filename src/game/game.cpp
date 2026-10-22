@@ -1,5 +1,6 @@
 #include "game.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -147,13 +148,19 @@ bool Game::init(const Args& args) {
 }
 
 int Game::run(const Args& args) {
-  scripted_ = !args.script.empty() || args.selftest;
+  scripted_ = !args.script.empty() || args.selftest || args.benchmark;
   if (!init(args)) return 1;
   if (args.selftest) {
     bool ok = selftest();
     plat::shutdown();
     Jobs::get().stop();
     return ok ? 0 : 2;
+  }
+  if (args.benchmark) {
+    benchmark();
+    plat::shutdown();
+    Jobs::get().stop();
+    return 0;
   }
   if (!args.script.empty()) {
     std::ifstream f(args.script);
@@ -267,7 +274,10 @@ void Game::frame(float dt) {
 
   ren.extraLights.clear();
   if (flashlight_ && mode_ == M_PLAY) ren.extraLights.push_back({vec4(cam.pos + cam.forward * 0.6f + cam.right * 0.15f, 9.f), vec4(2.4f, 2.3f, 2.0f, 0)});
-  ren.render(cam, ropt, hover_, time_, flash_, plat::width(), plat::height());
+  updateDynamicRes(dt);
+  RenderOptions frameOpt = ropt;
+  frameOpt.renderScale = ropt.renderScale * dynScale_;
+  ren.render(cam, frameOpt, hover_, time_, flash_, plat::width(), plat::height());
   ui::setBackdrop(ren.backdropTex());
 
   ui::begin(plat::width(), plat::height(), uiScale());
@@ -1285,4 +1295,21 @@ void Game::quickLoad() {
   std::string err;
   if (loadGame("quicksave", &err)) toast("Loaded quicksave", ui::theme::accent, ui::I_SAVE);
   else toast("Couldn't load quicksave: " + err, ui::theme::danger, ui::I_SAVE);
+}
+
+// Keeps the GPU inside its frame budget by rendering the world at a lower
+// resolution while it falls behind, then creeping back up. GPU time comes
+// from timestamp queries, so this reacts to the GPU, not to a CPU-bound sim.
+void Game::updateDynamicRes(float dt) {
+  if (!settings.dynamicRes || scripted_) { dynScale_ = 1; return; }
+  if ((dynTimer_ += dt) < 0.5f) return;  // each step reallocates the render targets; don't thrash
+  dynTimer_ = 0;
+  float budget = 1000.f / settings.targetFps, gpu = ren.gpuMs();
+  if (gpu <= 0) return;
+  float minScale = std::min(1.f, 0.5f / std::max(0.01f, ropt.renderScale));
+  float s = dynScale_;
+  if (gpu > budget * 0.92f) s *= std::max(0.8f, std::sqrt(budget * 0.85f / gpu));  // cost goes with pixel count
+  else if (gpu < budget * 0.7f) s += 0.05f;
+  s = std::clamp(std::round(s * 20) / 20, minScale, 1.f);
+  dynScale_ = s;
 }
