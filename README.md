@@ -104,6 +104,7 @@ Heat runs 20× faster than real time by default (`thermal_warp`), so fires and f
 | Tab | Workshop |
 | F1 | Help |
 | F3 | Performance stats |
+| F5 / F9 | Quicksave / quickload |
 | F11 | Fullscreen |
 | Esc | Menu and settings |
 
@@ -122,6 +123,15 @@ The concrete pad north of the shed holds a build jig, with an orbit camera aroun
 - **Build analysis**: the right panel shows mass, energy and runtime. It also warns about short circuits, devices not in a closed circuit, motors with nothing to turn, and parts that will fall off.
 - **Launch** (Enter) releases the build into the world.
 - **Blueprints**: eight working examples to start from (Rover, Fan cart, Rocket sled, Desk lamp, Desk fan, Space heater, Demolition rig, Solar lamp). You can also save your own.
+
+## Saving
+
+The whole world is saved: every voxel's material, temperature, damage and burn state, every loose body and its motion, the parts and their charge, the water, the air (temperature, smoke, steam and flow), the player, the tools, salvaged parts and the build on the workshop jig.
+
+- **F5** quicksaves and **F9** quickloads; both are also in the pause menu.
+- The game autosaves every 5 minutes and when you quit. **Continue** on the title screen picks up the latest autosave. The previous autosave is kept, and if the newest is damaged the game loads the one before it.
+- Saves live in `saves/` under the user data folder (`%APPDATA%\Realism\saves` on Windows). A default-world save is about 9–11 MB.
+- Files are written to a temporary name and then renamed, so a crash mid-save can't damage an existing save. Each file carries a checksum: a damaged, truncated or newer-format save is refused with a message, and the world you're in is left alone.
 
 ## Smooth voxels
 
@@ -207,6 +217,8 @@ works over SSH and in CI. It builds the world and checks that:
 - the wood stove draws warm air up its flue;
 - opening the water tower's valve sends out a jet at about √(2gh) for its head;
 - external forces (thrust, drag) are integrated once per frame rather than once per physics substep;
+- saving and loading reproduces the world, bodies, parts, air and player exactly (compared by a state hash), and the loaded world keeps simulating;
+- corrupt, truncated, newer-format and missing saves are refused without touching the live world, and a damaged autosave falls back to the previous one;
 - re-initialising the simulation clears the clock, bodies, effects, radiators, flow fields and statistics.
 
 Exit status is 0 when every check passes and 2 when one fails. `--help` lists
@@ -226,12 +238,12 @@ Read it before large changes.
 
 The simulation is the strong part: matter, heat, air, water, current and rigid
 bodies are coupled and covered by the headless self-test. The game shell around
-it is still a vertical slice. There is no save/load, no audio backend outside
+it is still a vertical slice. There is no audio backend outside
 Windows, no controller or remapping support, and no in-game tutorial. Those are
 the largest gaps between this and a shippable product, and `HANDOFF.md` lists
 them in priority order.
 
-`--script file` runs a command script (`pos`, `wait`, `tool`, `press`, `click`, `explode`, `workshop`, `blueprint`, `launch`, `title`, `menu`, `shot`, `log`, `probe x y z` for the air and radiant heat at a point), which is used for automated screenshots. Scripts render frames, so they need the normal windowed build.
+`--script file` runs a command script (`pos`, `wait`, `tool`, `press`, `click`, `explode`, `workshop`, `blueprint`, `launch`, `title`, `menu`, `shot`, `save name`, `load name`, `log`, `probe x y z` for the air and radiant heat at a point), which is used for automated screenshots. Scripts render frames, so they need the normal windowed build.
 
 ## Licence notes
 

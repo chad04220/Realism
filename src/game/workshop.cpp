@@ -59,6 +59,13 @@ void Workshop::createJig() {
   b->mass = 0;
   b->heat.reset(b->vol.bricks.size());
   jigId_ = b->id;
+  adoptJig(jigId_);
+}
+
+void Workshop::adoptJig(int jigId) {
+  Body* j = jigId ? g_.sim.bodyById(jigId) : nullptr;
+  if (!j || !j->frozen) { jigId_ = 0; createJig(); return; }
+  jigId_ = jigId;
   Body* gh = g_.sim.newBody();
   gh->vol.resize(4, 4, 4);
   gh->frozen = gh->ghost = gh->asleep = true;

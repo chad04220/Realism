@@ -179,6 +179,7 @@ int Game::run(const Args& args) {
     plat::swap();
     if (!args.screenshot.empty() && args.frames > 0 && frame >= args.frames) { saveScreenshot(args.screenshot); break; }
   }
+  if (!scripted_ && played_ && !autosave()) fprintf(stderr, "realism: autosave on quit failed\n");
   settings.save(plat::userDataDir() + "/settings.cfg");
   audio.shutdown();
   plat::shutdown();
@@ -205,6 +206,10 @@ void Game::frame(float dt) {
   if (in.pressed[key::F2]) hud_ = !hud_;
   if (in.pressed[key::F3]) stats_ = !stats_;
   if (in.pressed[key::F11]) plat::toggleFullscreen();
+  played_ = true;
+  bool typingName = mode_ == M_WORKSHOP && workshop->typing();
+  if (in.pressed[key::F5] && !typingName) quickSave();
+  if (in.pressed[key::F9] && !typingName) quickLoad();
   if (in.pressed[key::Escape]) {
     if (help_) help_ = false;
     else if (mode_ == M_WORKSHOP && !menu_) { mode_ = M_PLAY; workshop->leave(); }
@@ -244,7 +249,13 @@ void Game::frame(float dt) {
   if (mode_ == M_PLAY && !menu_) updateHover();
   updateViewmodel(dt);
 
-  if (!paused_ && !menu_) sim.step(dt);
+  if (!paused_ && !menu_) {
+    sim.step(dt);
+    if (!scripted_ && (autosaveTimer_ += dt) >= AUTOSAVE_SECONDS) {
+      if (autosave()) toast("Autosaved", ui::theme::faint, ui::I_SAVE);
+      else toast("Autosave failed \xE2\x80\x94 check disk space", ui::theme::danger, ui::I_SAVE);
+    }
+  }
   if (mode_ == M_PLAY && !menu_) updateHover();  // bodies may have been added or removed
   handleEvents();
   audio.setListener(cam.pos, cam.right);
@@ -1068,22 +1079,35 @@ void Game::resetWorld() {
   for (int i = 0; i < 90; i++) sim.step(1.f / 60.f);
   for (auto& b : sim.bodies) { b->vel = vec3(0); b->angVel = vec3(0); b->asleep = true; }
   sim.events.clear();
-  ren.uploadAllWorld();
-  workshop->createJig();
-  buildViewmodels();
+  if (workshop) {  // headless builds (self-test) have no renderer or workshop
+    ren.uploadAllWorld();
+    workshop->createJig();
+    buildViewmodels();
+  }
   pl_ = Player{};
   pl_.pos = scene.spawn;
   pl_.yaw = scene.spawnYaw;
-  grabId_ = 0;
   remoteCharges_.clear();
   remoteChargeBodies_.clear();
   valveCells_.clear();
   toasts_.clear();
+  clearTransientState();
+  mode_ = M_PLAY;
+  toast("World reset", ui::theme::accent);
+}
+
+// State that points into the old world (cached hits, grabbed body, open
+// menus) and must not survive a reset or a load.
+void Game::clearTransientState() {
+  grabId_ = 0;
   hoverCompCached_ = 0;
   hoverBodyCached_ = -3;
   hoverBodyIdCached_ = 0;
   hit_ = Hit{};
   hover_ = HoverInfo{};
+  workProgress_ = 0;
+  workComp_ = 0;
+  charge_ = 0;
   flash_ = shake_ = 0;
   paused_ = false;
   help_ = false;
@@ -1091,8 +1115,6 @@ void Game::resetWorld() {
   menu_ = false;
   hud_ = true;
   title_ = false;
-  mode_ = M_PLAY;
-  toast("World reset", ui::theme::accent);
 }
 
 void Game::saveScreenshot(const std::string& path) {
@@ -1149,6 +1171,8 @@ void Game::runScriptLine(const std::string& line, bool& quit) {
   else if (cmd == "menu") { std::string p; ss >> p; menu_ = !p.empty(); menuPage_ = p.empty() ? "main" : p; int tab = 0; ss >> tab; settingsTab_ = tab; }
   else if (cmd == "workshop") { mode_ = M_WORKSHOP; workshop->enter(); }
   else if (cmd == "play") { mode_ = M_PLAY; workshop->leave(); }
+  else if (cmd == "save") { std::string n = "script"; ss >> n; std::string e; if (!saveGame(n, &e)) fprintf(stderr, "script: save failed: %s\n", e.c_str()); }
+  else if (cmd == "load") { std::string n = "script"; ss >> n; std::string e; if (!loadGame(n, &e)) fprintf(stderr, "script: load failed: %s\n", e.c_str()); }
   else if (cmd == "blueprint") { std::string n; std::getline(ss, n); while (!n.empty() && n[0] == ' ') n.erase(0, 1); workshop->loadBlueprint(n); }
   else if (cmd == "launch") { workshop->launch(); }
   else if (cmd == "explode") { vec3 p; float e; ss >> p.x >> p.y >> p.z >> e; sim.explode(p, e); }
@@ -1240,4 +1264,17 @@ void Game::toggleValve(uint32_t id, int bi, const ivec3& near) {
     toast("Valve closed", ui::theme::dim, ui::I_DROP);
   }
   if (bi >= 0) { sim.bodies[bi]->shapeDirty = true; sim.bodies[bi]->wake(); }
+}
+
+void Game::quickSave() {
+  std::string err;
+  if (saveGame("quicksave", &err)) toast("Saved (F9 to load)", ui::theme::good, ui::I_SAVE);
+  else toast("Save failed: " + err, ui::theme::danger, ui::I_SAVE);
+}
+
+void Game::quickLoad() {
+  if (!saveExists("quicksave")) { toast("No quicksave yet (F5 saves)", ui::theme::dim, ui::I_SAVE); return; }
+  std::string err;
+  if (loadGame("quicksave", &err)) toast("Loaded quicksave", ui::theme::accent, ui::I_SAVE);
+  else toast("Couldn't load quicksave: " + err, ui::theme::danger, ui::I_SAVE);
 }

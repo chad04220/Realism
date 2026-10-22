@@ -5,3 +5,4 @@ out/
 .vs/
 CMakeUserPresets.json
 __pycache__/
+saves/

@@ -15,6 +15,10 @@ class Workshop {
  public:
   explicit Workshop(Game& g);
   void createJig();
+  // After a saved game is loaded: take over the jig body that came with it
+  // (keeping the build on it) or make a fresh one if the save had none.
+  void adoptJig(int jigId);
+  int jigId() const { return jigId_; }
   void enter();
   void leave();
   void update(float dt, plat::Input& in, Camera& cam);

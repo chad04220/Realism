@@ -53,6 +53,17 @@ class Game {
   void toast(const std::string& s, ui::Color c = ui::theme::text, int icon = 0);
   float uiScale() const;
 
+  // Saved games (savegame.cpp). Slots are file names under <user data>/saves.
+  // saveGame never touches the live world; loadGame leaves it untouched if the
+  // file is unreadable and rebuilds the default world if it fails part-way.
+  bool saveGame(const std::string& slot, std::string* err = nullptr);
+  bool loadGame(const std::string& slot, std::string* err = nullptr);
+  bool autosave();                       // rotates autosave -> autosave.1 first
+  bool loadNewestAutosave(std::string* err = nullptr);
+  static std::string savePath(const std::string& slot);
+  static std::string saveDir;            // empty = <user data>/saves (the self-test uses its own)
+  static bool saveExists(const std::string& slot);
+
  private:
   enum Mode { M_PLAY, M_WORKSHOP };
   struct Player {
@@ -85,6 +96,9 @@ class Game {
   void drawHeatVignette();
   void drawPrompt(float cx, float cy);
   void resetWorld();
+  void clearTransientState();
+  void quickSave();                       // F5
+  void quickLoad();                       // F9             // hover, menus, toasts... (reset and load)
   void saveScreenshot(const std::string& path);
   void runScriptLine(const std::string& line, bool& quit);
   bool selftest();
@@ -141,6 +155,9 @@ class Game {
   float fps_ = 60, frameMs_ = 16;
   float time_ = 0;
   bool quit_ = false;
+  float autosaveTimer_ = 0;
+  bool played_ = false;                   // left the title screen: worth an autosave on quit
+  static constexpr float AUTOSAVE_SECONDS = 300;
   bool scripted_ = false;
   plat::Input scriptIn_;
   std::vector<std::string> script_;

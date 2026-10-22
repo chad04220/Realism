@@ -83,7 +83,7 @@ both 0.025 m and 0.02 m voxels):
 | Content | Vertical slice | One yard scene, 8 assembly blueprints, ~50 materials, 9 tools |
 | UI | Working | Custom SDF UI, HUD, menus, target cards, title screen |
 | Renderer | Working (Windows/Linux GL) | Ray-marched smooth/blocky surfaces, shadows, bloom, volumetrics |
-| Persistence | **Missing** | Only `settings.cfg` and `.rbp` blueprints; no world/body/game save |
+| Persistence | Working (v1) | `.rsav` saves of world, bodies, parts, debris, water, air, player, salvage and jig; quicksave/quickload, autosave with fallback; exact round-trip by state hash |
 | Audio | **Windows only** | `waveOut`; `audio.cpp` returns false elsewhere |
 | Headless tests | Working | `--selftest`, no window/GL/X11; CTest and CI wired |
 | Player→body collision | **Missing** | `Game::playerCollides` only samples `sim.world` |
@@ -344,9 +344,49 @@ noted:
     supported range explicit (0.02–0.025 m).
 12. **HUD/CLI range.** `--voxel`, `settings.cfg` and `sanitize()` all agree on
     the supported range; `--voxel 0.03` fails with a clear message.
+13. **Save/load v1 (S1, most of S2).** See §6.1.
 
 The self-test's newest checks: settings round-trip/parse/clamp, unit force,
-`Sim::init` reset.
+`Sim::init` reset, save/load exact round-trip, damaged-save rejection,
+autosave fallback.
+
+### 6.1 Save format (`src/sim/save.*`, `src/game/savegame.cpp`)
+
+- **File:** `"RSAV"`, u32 format (currently 1), u32 header length, a JSON
+  header (version, voxel size, world size, sim time, counts — for people and a
+  future save browser), u64 payload length, the binary payload, and an FNV-1a
+  64 checksum of everything before it. Little-endian.
+- **Payload sections**, each opened by a 4-byte tag so misalignment is caught
+  early: `SIM ` settings, `MATS` material names (ids are remapped by name, so
+  reordering or adding materials doesn't break old saves), `COMP` the whole
+  component table, `STAT` clocks and globals, `VOL ` the world, `BODY` bodies
+  (voxels plus their *stored* mass properties, samples, rotating parts and hot
+  bricks), `DEBR`, `HOT ` (world hot bricks and electrical cells), `FLUI`,
+  `AIR ` (velocity, temperature, smoke, steam), then the game's `GAME` …
+  `END ` section.
+- **Bricks** are run-length encoded per field (u16 run, value), so the default
+  world is ~9 MB at 0.025 m and ~11 MB at 0.02 m. Save ~0.2–0.4 s, load
+  ~0.25–0.5 s on the 2-vCPU VM.
+- **Exactness:** derived body data (mass, COM, inertia, samples) is saved, not
+  recomputed, because a body whose voxels just changed keeps stale mass
+  properties until the next step; recomputing on load moved it. Quaternions are
+  kept bit-for-bit. `save::stateHash(sim, &parts)` hashes world, bodies, parts
+  and air and can name the first differing section.
+- **Not saved (presentation or derived each step):** effects, events,
+  radiators, water flow field, placement ghost and tool viewmodels (rebuilt),
+  hover/menu state, workshop undo history, the RNG (see §7.3 determinism).
+  Thermal warp comes from the player's settings, not the save.
+- **Safety:** readFile checks magic, format, sizes and checksum before the
+  live world is touched. readSim validates settings, materials and parts
+  before calling `Sim::init`; if it fails after that, the game rebuilds the
+  default world and shows the error. Every count is bounded by the bytes left.
+- **Slots:** `<userData>/saves/<slot>.rsav`. `quicksave` (F5/F9, pause
+  menu), `autosave` every 5 min and on quit, with the previous one copied to
+  `autosave.1` first; *Continue* on the title loads the newest readable one.
+  Script commands `save name` / `load name`.
+- **Changing the format:** append new data in a new tagged section or bump
+  `save::FORMAT` and keep a reader for the old one. Never reuse a tag with a
+  different layout.
 
 ---
 
@@ -380,7 +420,7 @@ The self-test's newest checks: settings round-trip/parse/clamp, unit force,
 
 | # | Gap | Impact |
 |---|---|---|
-| P1 | **No save/load of the world, bodies, components or player** | The game cannot be a game; every session resets. This is the top blocker. |
+| P1 | ~~No save/load~~ — v1 done (§6.1); no save browser or named slots in the UI yet | Players can quit and continue; only one manual slot (quicksave) plus autosaves |
 | P2 | No tutorial, goals or progression | A new player bounces off the sandbox; the title screen explains nothing |
 | P3 | Audio is silent outside Windows | Linux/macOS builds have no sound; the mixer/backend is not abstracted |
 | P4 | Player walks through bodies | Grabbing/standing on machines is impossible; breaks the physical fantasy |
@@ -422,6 +462,8 @@ The self-test's newest checks: settings round-trip/parse/clamp, unit force,
   the supported sizes.
 - **Memory:** one `Brick` per touched 16³ region. The 0.02 m world is 698 MB.
   Fine for desktop, hostile to 8 GB machines and future 1 cm worlds.
+- **Save performance:** saving runs on the game thread (~0.2–0.4 s hitch
+  every 5 minutes). Snapshot-then-encode on a worker thread would hide it.
 - **Bugs found but not fixed:** `Sim::settleBody` silently drops voxels if no
   free cell is found in 3 cells above; `spawnDebris` silently drops water/ash at
   the 30k cap; `T_FREEZE` is ignored for body-owned molten cells; blueprint
@@ -442,12 +484,11 @@ known crash on the shipped scene; documented supported range.
 
 ### M1 — Make it a game you can leave and come back to (blocker)
 
-1. **Save/load v1** (L): versioned binary or JSON schema for world bricks,
-   bodies, components, temperatures, flags, player, time, camera/tool, workshop
-   jig and blueprint references. Atomic write (temp + rename), checksum,
-   backward-compatible version field, corruption error UI.
-2. **Autosave and crash recovery** (M): save on quit and every N minutes, keep
-   a rotating slot; load the last good save if the newest is corrupt.
+1. ~~**Save/load v1** (L)~~ — done, see §6.1. Remaining: a save browser with
+   named slots and thumbnails (the JSON header is there for it).
+2. **Autosave and crash recovery** (M) — autosave every 5 min and on quit,
+   previous slot kept, fallback on corruption: done. Remaining: autosave from
+   a crash handler (needs S24), and a kill -9 soak of the temp+rename path.
 3. **Pause/menu correctness** (S): save/load pause the sim; settings apply live
    where possible; `settings.cfg` world size requires restart (document).
 4. **Player collision with bodies** (M): capsule vs body samples; standing on a
@@ -541,8 +582,8 @@ unless it is pure presentation.
 
 | ID | Pri | Size | Task | Files | Done when |
 |---|---|---|---|---|---|
-| S1 | P0 | L | Save/load world+bodies+components+player | new `sim/save.cpp`, `game/game.cpp`, `sim/sim.h` | Byte-identical world hash after round-trip; corrupt file rejected; self-test |
-| S2 | P0 | M | Atomic autosave + recovery slot | `game/game.cpp` | Kill -9 during save leaves a loadable previous slot |
+| S1 | ✅ | L | Save/load world+bodies+components+player | new `sim/save.cpp`, `game/game.cpp`, `sim/sim.h` | Byte-identical world hash after round-trip; corrupt file rejected; self-test |
+| S2 | P0 (mostly done) | M | Atomic autosave + recovery slot | `game/game.cpp` | Kill -9 during save leaves a loadable previous slot |
 | S3 | P0 | M | Player capsule vs body collision | `game/game.cpp` | Player stands on a crate and cannot walk through a rover |
 | S4 | P0 | L | Cross-body electrical nets | `sim/electric.cpp` | Detached bulb and battery still light when wired across a seam |
 | S5 | P0 | M | Deterministic seed/replay | `sim/sim.*`, `core/math.h` | Two runs with same seed/inputs produce equal state hash |

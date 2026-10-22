@@ -10,6 +10,8 @@
 #include "volume.h"
 #include "air.h"
 
+namespace save { struct Access; }
+
 struct Debris {          // a single loose voxel in flight
   vec3 p, v;
   uint8_t mat;
@@ -153,6 +155,7 @@ class Sim {
   void processSupport();
 
  private:
+  friend struct save::Access;
   float thermalAcc_ = 0, fluidAcc_ = 0, electricAcc_ = 0, airAcc_ = 0;
   void airCoupling(float dt);
   // Visited set for the support flood: one bit per world cell. The flood is

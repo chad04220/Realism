@@ -1,8 +1,12 @@
 // In-game HUD, menus and the help sheet.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <filesystem>
+#include <iterator>
 #include "game.h"
+#include "../sim/save.h"
 #include "workshop.h"
 #include "assemblies.h"
 
@@ -275,7 +279,8 @@ void Game::drawHelp() {
                {"1 \xE2\x80\x93 9  /  wheel", "Choose tool"}, {"E", "Use: switches, motors, fuses, rockets"}, {"F", "Flashlight"},
                {"G", "Detonate remote charges"}, {"N", "Fly mode"}, {"Tab", "Workshop (build machines)"}};
   KV right[] = {{"T", "Slow motion"}, {"P", "Pause the simulation"}, {"V", "Smooth / blocky voxels"}, {"F2", "Hide HUD"},
-                {"F3", "Performance stats"}, {"F11", "Fullscreen"}, {"Esc", "Menu"}};
+                {"F3", "Performance stats"}, {"F5 / F9", "Quicksave / quickload"}, {"F11", "Fullscreen"},
+                {"Esc", "Menu"}};
   float yy = y + 110 * s;
   for (auto& kv : left) {
     rectBorder(x + 32 * s, yy - 3 * s, 150 * s, 26 * s, Color(1, 1, 1, 0.06f), theme::line, 6 * s);
@@ -319,6 +324,10 @@ void Game::drawMenu() {
     if (button("Settings", x, yy, bw, bh)) menuPage_ = "settings";
     yy += bh + 10 * s;
     if (button("Controls", x, yy, bw, bh)) { help_ = true; menu_ = false; }
+    yy += bh + 10 * s;
+    if (button("Save game  (F5)", x, yy, bw, bh)) { menu_ = false; quickSave(); }
+    yy += bh + 10 * s;
+    if (button("Load game  (F9)", x, yy, bw, bh, false, saveExists("quicksave"))) quickLoad();
     yy += bh + 10 * s;
     if (button("Reset world", x, yy, bw, bh)) { menu_ = false; resetWorld(); }
     yy += bh + 10 * s;
@@ -673,6 +682,110 @@ bool Game::selftest() {
     }
     sim.gravity = savedGravity;
   }
+  // Saved games. The world at this point has been burned, flooded, blasted and
+  // driven by the checks above, so it exercises every section of the format.
+  {
+    auto fileBytes = [](const std::string& p) {
+      std::ifstream f(p, std::ios::binary);
+      return std::vector<char>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    };
+    auto writeBytes = [](const std::string& p, const std::vector<char>& b) {
+      std::ofstream f(p, std::ios::binary | std::ios::trunc);
+      f.write(b.data(), (std::streamsize)b.size());
+    };
+    // Never touch the player's own saves (the autosave check deletes files).
+    Game::saveDir = plat::userDataDir() + "/selftest-saves-" + std::to_string((long long)(plat::now() * 1e6) % 1000000007);
+    for (int i = 0; i < 30; i++) sim.step(1.f / 60.f);
+    std::vector<std::pair<std::string, uint64_t>> parts0, parts1;
+    const uint64_t h0 = save::stateHash(sim, &parts0);
+    const size_t bodies0 = sim.bodies.size(), debris0 = sim.debris.size(), voxels0 = sim.world.countSolid();
+    const float airT0 = *std::max_element(sim.air.T.begin(), sim.air.T.end());
+    pl_.pos = vec3(3.25f, 1.5f, 7.75f);
+    pl_.yaw = 1.25f;
+    tool_ = T_TORCH;
+    double t0 = plat::now();
+    std::string err;
+    bool saved = saveGame("selftest", &err);
+    double tSave = plat::now() - t0;
+    const std::string path = savePath("selftest");
+    const std::vector<char> good = fileBytes(path);
+    fprintf(stderr, "  save: %.1f MB in %.2f s (%zu bodies, %zu debris, %zu M voxels)%s%s\n", good.size() / 1048576.0, tSave,
+            bodies0, debris0, voxels0 / 1000000, saved ? "" : " FAILED: ", err.c_str());
+    check(saved && !good.empty(), "game saves to disk");
+
+    // Change everything the load must undo.
+    for (int i = 0; i < 20; i++) sim.step(1.f / 60.f);
+    sim.removeWorld(sim.world.nx / 2, 10, sim.world.nz / 2, false);
+    pl_.pos = vec3(1, 1, 1);
+    tool_ = T_HAND;
+    const uint64_t hChanged = save::stateHash(sim);
+    t0 = plat::now();
+    bool loaded = loadGame("selftest", &err);
+    double tLoad = plat::now() - t0;
+    const uint64_t h1 = save::stateHash(sim, &parts1);
+    for (size_t i = 0; i < parts0.size() && i < parts1.size(); i++)
+      if (parts0[i] != parts1[i]) { fprintf(stderr, "  first difference after load: %s\n", parts0[i].first.c_str()); break; }
+    const float airT1 = *std::max_element(sim.air.T.begin(), sim.air.T.end());
+    fprintf(stderr, "  load: %.2f s, state hash %016llx (changed %016llx) -> %016llx, hottest air %.2f -> %.2f C%s%s\n",
+            tLoad, (unsigned long long)h0, (unsigned long long)hChanged, (unsigned long long)h1, airT0, airT1,
+            loaded ? "" : " FAILED: ", err.c_str());
+    check(loaded && hChanged != h0 && h0 == h1 && sim.bodies.size() == bodies0 && sim.debris.size() == debris0 &&
+              sim.world.countSolid() == voxels0,
+          "save/load round-trip restores the exact world, bodies and parts");
+    check(loaded && airT1 == airT0 &&
+              length(pl_.pos - vec3(3.25f, 1.5f, 7.75f)) < 1e-5f && std::fabs(pl_.yaw - 1.25f) < 1e-5f && tool_ == T_TORCH,
+          "save/load restores the air, the player and the tool");
+    // The loaded world must keep simulating.
+    for (int i = 0; i < 30; i++) sim.step(1.f / 60.f);
+    bool sane = true;
+    for (auto& b : sim.bodies)
+      if (!std::isfinite(b->pos.x + b->pos.y + b->pos.z) || b->pos.y < -1) {
+        sane = false;
+        fprintf(stderr, "  body %d: %zu voxels, pos %.2f %.2f %.2f, vel %.2f %.2f %.2f, asleep %d\n", b->id, b->voxels,
+                b->pos.x, b->pos.y, b->pos.z, b->vel.x, b->vel.y, b->vel.z, (int)b->asleep);
+      }
+    check(sane, "a loaded world keeps simulating");
+
+    // Damaged files are refused before the live world is touched.
+    const uint64_t hLive = save::stateHash(sim);
+    std::vector<char> bad = good;
+    bad[bad.size() / 2] ^= 0x5A;
+    writeBytes(path, bad);
+    bool corruptRejected = !loadGame("selftest", &err) && save::stateHash(sim) == hLive;
+    fprintf(stderr, "  corrupt byte: %s\n", err.c_str());
+    bad.assign(good.begin(), good.begin() + good.size() * 2 / 3);
+    writeBytes(path, bad);
+    bool truncRejected = !loadGame("selftest", &err) && save::stateHash(sim) == hLive;
+    fprintf(stderr, "  truncated: %s\n", err.c_str());
+    bad = good;
+    bad[4] = 99;  // format version from the future
+    writeBytes(path, bad);
+    bool futureRejected = !loadGame("selftest", &err) && save::stateHash(sim) == hLive;
+    fprintf(stderr, "  newer format: %s\n", err.c_str());
+    bool missingRejected = !loadGame("selftest-missing", &err) && !loadGame("../escape", &err);
+    check(corruptRejected && truncRejected && futureRejected && missingRejected,
+          "corrupt, truncated, future and missing saves are refused without touching the world");
+
+    // Autosave keeps the previous file; a corrupt newest autosave falls back to it.
+    std::error_code ec;
+    std::filesystem::remove(savePath("autosave"), ec);
+    std::filesystem::remove(savePath("autosave.1"), ec);
+    bool a1 = autosave();
+    const uint64_t hA = save::stateHash(sim);
+    for (int i = 0; i < 10; i++) sim.step(1.f / 60.f);
+    bool a2 = autosave();
+    std::vector<char> newest = fileBytes(savePath("autosave"));
+    if (!newest.empty()) newest.resize(newest.size() / 2);
+    writeBytes(savePath("autosave"), newest);
+    err.clear();
+    bool fellBack = loadNewestAutosave(&err) && save::stateHash(sim) == hA;
+    if (!fellBack) fprintf(stderr, "  autosave fallback: %s (hash %016llx, wanted %016llx)\n", err.c_str(),
+                           (unsigned long long)save::stateHash(sim), (unsigned long long)hA);
+    check(a1 && a2 && fellBack, "a corrupt autosave falls back to the previous one");
+    std::filesystem::remove_all(Game::saveDir, ec);
+    Game::saveDir.clear();
+    toasts_.clear();
+  }
   // Re-initialising a Sim is how "new world" works: no clock, body, effect,
   // radiator, flow field or statistic may survive it.
   {
@@ -790,7 +903,15 @@ void Game::drawTitle() {
               "Heat, air, water, current and motion move between them.",
               16 * s, theme::dim, 1.4f);
   float by = y + 250 * s, bw = 300 * s, bh = 50 * s;
-  if (button("Play", x, by, bw, bh, true)) {
+  if (saveExists("autosave") || saveExists("autosave.1")) {
+    if (button("Continue", x, by, bw, bh, true)) {
+      std::string err;
+      if (loadNewestAutosave(&err)) { toast("Continuing from your last session", theme::accent, I_SAVE); audio.playUi(SFX_UI); }
+      else toast("Couldn't load the autosave: " + err, theme::danger, I_SAVE);
+    }
+    by += bh + 12 * s;
+  }
+  if (button("Play", x, by, bw, bh, !saveExists("autosave") && !saveExists("autosave.1"))) {
     title_ = false;
     toast("Welcome to Realism \xE2\x80\x94 press F1 for controls", theme::accent, I_GEAR);
     toast("Everything here is built from real parts. Take it apart.", theme::text);

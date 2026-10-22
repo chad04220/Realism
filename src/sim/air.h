@@ -11,6 +11,7 @@
 #include "../core/math.h"
 
 class Volume;
+namespace save { struct Access; }
 
 class AirSim {
  public:
@@ -47,6 +48,7 @@ class AirSim {
   int cid(int x, int y, int z) const { return x + nx * (z + nz * y); }
 
  private:
+  friend struct save::Access;
   std::vector<float> u, v, w;     // staggered face velocities
   std::vector<float> u0, v0, w0, T0, s0, q0, div;
   struct MGLevel {
