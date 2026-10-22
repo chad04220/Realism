@@ -70,12 +70,12 @@ both 0.025 m and 0.02 m voxels):
 | Rigid bodies + inertia | Working | Mass/COM/inertia recomputed from voxels; sphere-sample contacts |
 | Sequential-impulse physics | Working | World and body-body contacts, friction, restitution, sleeping |
 | Destruction | Working | Joint-strength detachment, cratering, Voronoi fracture, debris |
-| Support / falling structures | Working | Bit-packed flood, now 16 MB scratch instead of 512 MB |
+| Structure (load paths, bond strength) | Working (approximate, §6.2) | Every voxel held only by its neighbours; bonds with real strengths fail in tension/shear/bending; local incremental checks |
 | Heat conduction / convection / radiation | Working | Faces, air coupling, 320-ray radiant budget |
 | Fire / combustion | Working | Ignition, fuel, burnout, residue, water extinguishing |
 | Phase change | Partial | Melt/freeze/boil exists; **no latent heat** and no volume change |
 | Air (stable fluids) | Working | 20 cm grid, multigrid pressure, buoyancy, smoke/steam, wind, fans, blasts |
-| Water | Working (world only) | Fill-level cells, pressure head, droplets, Torricelli jets, currents |
+| Water | Working (world only, §6.3) | Whole voxels, free fall, body-wide pressure levelling, Torricelli jets, exact conservation, drawn as plain voxels |
 | Powders / molten flow | Working | Whole-voxel slumping on the world grid |
 | Circuits | Working within one volume | Nets, loads, shorts, battery drain, solar output |
 | Machines | Working | Motor→shaft→wheel/prop, rockets, charges, valves |
@@ -237,9 +237,10 @@ batches, explosion scans, air rows and radiant raycasts. Rules:
    air init).
 3. **6-connectivity matters.** Wires, support, heat and structure all use
    `DIRS6`. A diagonal-only connection is not a connection.
-4. **Water fill encoding:** `fuel == 0` means a full cell; `> 0` is the fill in
-   `(0, 1]`; a value above 1 is overfill and must be redistributed by the water
-   step. Never store a negative fill.
+4. **Water is whole voxels.** A water cell is one full voxel; `fuel` is unused
+   for water (always 0). Add or move water only by whole voxels and through
+   `Sim::placeWater` when it lands, so the count is conserved exactly. (Saves
+   from 2.1 with fractional fills are rounded on load.)
 5. **`Cell::hp` is 255 for intact; 0 is never valid** (clamp to 1 after damage).
 6. **`aux` is overloaded by material**: molten remembers its original material;
    a valve gate uses `aux == 1`. Do not add a third meaning without renaming it
@@ -345,10 +346,25 @@ noted:
 12. **HUD/CLI range.** `--voxel`, `settings.cfg` and `sanitize()` all agree on
     the supported range; `--voxel 0.03` fails with a clear message.
 13. **Save/load v1 (S1, most of S2).** See §6.1.
+14. **Structure (C7).** Every voxel is held up only by its neighbours, through
+    bonds with real strengths; overloaded sections break. See §6.2. The scene
+    was rebuilt to stand under it at 0.02 and 0.025 m: roof boards on the
+    rafters with the tiles lifted onto them, rafter tails out to the eave,
+    gutters on brackets overlapping the tails, pine barge boards at the
+    verges, flashing that rests, logs on the stove's ember bed, tower braces
+    and the valve handwheel joined face to face, the trunk's wood running up
+    into the crown, foliage at 40 kg/m³.
+15. **Water as voxels (C10, C18).** See §6.3. Exactly conserved; drawn as
+    voxels with no shader surface.
+16. **Radiative cooling bound.** A voxel can't cool below the coldest thing
+    it touches in one step; light voxels (foliage, bulb glass) used to
+    overshoot and run away to infinite temperature.
 
 The self-test's newest checks: settings round-trip/parse/clamp, unit force,
 `Sim::init` reset, save/load exact round-trip, damaged-save rejection,
-autosave fallback.
+autosave fallback, killed-writer safety, water conservation and connected
+containers, scene stands bond by bond, soil/steel cantilevers against beam
+theory, resting vs glued, a hanging weight on weak and strong links.
 
 ### 6.1 Save format (`src/sim/save.*`, `src/game/savegame.cpp`)
 
@@ -395,6 +411,71 @@ autosave fallback.
 
 ---
 
+### 6.2 Structure (`src/sim/structure.cpp`)
+
+The rule: every voxel has weight and only its neighbours hold it up.
+
+- **Ground-supported matter**: a voxel on an unbroken column of bearing matter
+  (solid or powder) down to y = 0 is carried straight down and needs no more
+  thought. Everything above a gap in its column is *hanging* and is solved.
+- **Bonds**: the face between two voxels. Same part → the weaker material's
+  `Material::tensile` (Pa, real values; foliage is set as its twigs). Different
+  parts → the weaker of the two joints (`jointStress`: mortar 0.4 MPa, nailed
+  0.5, screwed 1, glued 3, press-fit 2, bolted 10, welded/cast/grown/ground =
+  material, resting 0). Loose rubble (component 0) bonds to nothing. Damage
+  (`hp`) weakens a bond proportionally.
+- **Load path**: Dijkstra from the ground-supported matter. Bearing down
+  costs 0.05 per voxel (compression is stiff); sideways or up costs
+  `1 + 1 MPa / bond`, and a zero-strength bond can't be crossed sideways or
+  up. Each voxel then shares its load among *all* neighbours nearer the ground
+  in proportion to 1/cost (a DAG, not a tree).
+- **Checks**: weight (plus liquid/powder standing on a voxel) flows down the
+  DAG farthest-first, carrying signed moments about x and z. Upward bonds fail
+  in tension (V > σA). Sideways bonds are grouped per interface between two
+  columns into vertical runs of bonded faces; each run is a beam section
+  (Mcap = σ b d²/6, Vcap = 0.6 σ d A, σ = mean of the run). The run is the
+  matter at the cut, not the load route, so a rafter is its full depth.
+- **Failure**: failed bonds are treated as broken and the load re-routed (up
+  to six rounds); then a voxel falls if every one of its supports failed or is
+  falling, or if it has no route at all. Each separate falling piece becomes a
+  rigid body (or debris if ≤ 10 voxels). Neighbours are re-seeded, so
+  collapses cascade.
+- **Locality and cost**: `checkAllStructures()` solves everything (scene
+  build: ~0.4 s at 0.025 m, ~1 s at 0.02 m; on load it runs as a dry run to
+  rebuild state). In play, changes (`supportSeeds`) are handled in two parts:
+  (a) a ground-ward walk per change, shared within a pass, drops pieces cut
+  off entirely; (b) the strength solve covers only matter within 0.3 m (R
+  bonds) of the changes. At the window's edge, matter that was farther from
+  the ground in the last solve feeds in its remembered load and moments
+  (`loadState_`, an open-addressing table), and nearer matter holds it up, so
+  notching a beam's root still sees the whole beam. Checks are batched (≥ 0.1
+  s apart, and ≥ 10× the last check's cost, capped at 0.5 s) except after a
+  blow, blast, chisel or build (`structureUrgent`). Typical local check 10–30
+  ms, p90 ~45 ms on the 2-vCPU VM.
+- **Debug**: `REALISM_DEBUG_STRUCT=1` prints every failing section/hanger with
+  materials, parts and forces, and per-check timing.
+- **Known approximations**: least-effort routing is a heuristic for real load
+  distribution; moments ignore torsion; compression never fails; bodies are
+  not stress-checked and don't load what they rest on; windowed checks trust
+  the last solve beyond 0.3 m.
+
+### 6.3 Water (`src/sim/fluids.cpp`)
+
+- Whole voxels. With air below it a water voxel moves down one cell (short
+  drop) or becomes free-falling debris (longer drop); at an edge it pours
+  over.
+- Pressure: each connected body touched by an active voxel is walked; voxels
+  move from its highest surface cells to its lowest open cells (sides and
+  above) until level to within one voxel. An open side cell 3+ voxels below
+  the surface jets instead: `v = sqrt(2 g h)`, `v·dt/vs` voxels per tick per
+  opening. A body that isn't yet level stays awake.
+- `placeWater` puts a landing voxel at the lowest open cell of the body it
+  lands in, or on top of whatever it ended up inside; water debris never
+  expires or turns to dust.
+- Rendering: water is drawn exactly as voxels (transmission and tint like
+  glass); the old sub-voxel surface and animated wave normals are gone.
+- Debug: `REALISM_DEBUG_WATER=1` prints each body walk.
+
 ## 7. Known defects and gaps
 
 ### 7.1 Correctness / simulation
@@ -407,18 +488,18 @@ autosave fallback.
 | C4 | Water exists only in the world grid | `fluids.cpp` | Water inside a body never flows, pours or finds a level; a bucket of water is static | Either forbid water in bodies at creation or promote it to the world when a body opens; add a test |
 | C5 | Bodies do not displace water | `physics.cpp`, `fluids.cpp` | A body entering water does not raise the level or push a current | Add a body-mask to the water step and transfer volume at the free surface |
 | C6 | Circuits are per-volume and need a local source | `electric.cpp` | A bulb in a separate body from its battery never lights; split lamp/solar assemblies demonstrate this | Build a global net across touching bodies (or across components in contact), or keep assemblies rigid and forbid electrical splits |
-| C7 | No structural stress, only connectivity + joint strength | `sim.cpp`, `damage.cpp` | A 10 m cantilever is as stable as a 10 cm one; thermal expansion does nothing | Add a coarse stress pass on the support component (load per joint, buckling), with a test beam |
+| C7 | ~~No structural stress~~ — load paths and bond strength done (§6.2). Remaining: no stress inside rigid bodies, no loads from bodies resting on structures, compression unlimited, no buckling or thermal expansion | `structure.cpp` | A plank held at one end in a body never snaps; a heavy crate on a weak shelf doesn't break it | Extend the solver to bodies (anchored at contacts), add contact loads, a compressive limit, then expansion |
 | C8 | Radiant rays can create energy | `thermal.cpp` | Emission is proportional to surface temperature but hit energy is not normalized by the sampled solid angle/visibility; enclosed spaces can gain heat | Importance-sample emitters with a power-conserving estimator; add a two-plate equilibrium test |
 | C9 | Combustion ignores oxygen consumption and products | `thermal.cpp` | Fire burns the same in a sealed box with one open face; no CO/soot mass; no char layer | Add `O2`/`CO2`/`CO` fields to `AirSim`, consume oxygen per mole, produce smoke/heat; test a sealed room |
-| C10 | Water mass can leak | `fluids.cpp` | Debris cap converts droplets to dust, droplet life expires, `settleBody`/`spawnDebris` can drop water | Return a success flag from `spawnDebris`, recycle water into the world, and assert conservation in a soak |
-| C11 | Support flood re-walks components | `sim.cpp` | Each seed re-floods its whole connected component; a large structure after one cut can take a long time; >4 M cells are assumed supported | Add a per-component "supported" cache invalidated on cuts, or a coarse chunk graph |
+| C10 | ~~Water mass can leak~~ — fixed: water is whole voxels; falling, expiring and over-cap water lands via `placeWater`; conservation is asserted in two tests | — | Water now leaves the world only by boiling | — |
+| C11 | ~~Support flood re-walks components~~ — walks now share results within a pass (§6.2) | `structure.cpp` | — | — |
 | C12 | No continuous collision for bodies | `physics.cpp` | Fast small bodies can tunnel through thin walls; only debris ray-marches | Add swept sphere/substep CCD for bodies above a speed threshold |
 | C13 | Body-body contacts are sample spheres | `physics.cpp` | Thin plates and sharp shapes collide as blobs | Add per-sample shape/radius or a small box/plane proxy; keep the sample budget |
 | C14 | Friction is isotropic and contact heat is a simple split | `physics.cpp` | Wood slides equally in all directions; no stick-slip | Add a friction direction frame and a proper work integral; optional |
 | C15 | No thermal expansion or thermal stress | everywhere | Heated beams do not buckle, glass does not crack from gradients | Coupled to C7; start with a scalar expansion and a stress threshold |
 | C16 | Air can be heated past the clamp and solids past 3600 °C | `air.cpp`, `thermal.cpp` | Values clamp rather than fail; a runaway can hide a bug | Add invariants/assertions in debug builds and a diagnostics overlay |
 | C17 | `T_BOIL` removes the cell immediately | `thermal.cpp` | Boiling is not a phase change with a budget; steam mass is only visual | Coupled to C1/C2 |
-| C18 | Water pressure is a column scan, not a pressure solve | `fluids.cpp` | Horizontal pressure waves and pipe networks are approximate; disconnected pockets can equalize incorrectly | Replace with a shallow-water/pressure projection on the water cells, or document the approximation |
+| C18 | Water pressure is body-wide levelling, not a pressure solve (§6.3) | `fluids.cpp` | Levels equalise correctly but at a voxels-per-tick pace, not with waves; a very large body (> 600k voxels) is walked in part | Fine for the yard; a pressure projection would add waves and speed |
 | C19 | Gravity is a constant vector | `sim.h` | Fine for one yard; not a planet/space game | If the game stays local, keep it and say so |
 
 ### 7.2 Presentation / product

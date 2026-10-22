@@ -1,5 +1,6 @@
 #include "materials.h"
 #include <cmath>
+#include <utility>
 
 Material MATS[MAT_COUNT];
 
@@ -34,7 +35,7 @@ void initMaterials(float vs) {
     flammable(m, 300, 900, 2600, ASH); m.pattern = P_WOOD; }
   { auto& m = def(PINE, "Pine plank", 0xd2a86e, 450, 1700, 0.12f, 150, "Light softwood. Nailed planks pop off under a good hit.");
     flammable(m, 280, 600, 2200, ASH); m.pattern = P_WOOD; }
-  { auto& m = def(LEAVES, "Leaves", 0x3f8f35, 120, 2000, 0.1f, 3, "Thin and airy: a voxel of foliage is mostly air.");
+  { auto& m = def(LEAVES, "Leaves", 0x3f8f35, 40, 2000, 0.1f, 3, "Thin and airy: a voxel of foliage is mostly air.");
     flammable(m, 260, 40, 1600, AIR, 700); m.pattern = P_LEAF; }
   { auto& m = def(BRICK, "Fired clay brick", 0xa84a33, 1900, 840, 0.7f, 150, "Strong in compression. The mortar joints give way first.");
     m.pattern = P_BRICK; m.friction = 0.75f; }
@@ -108,6 +109,20 @@ void initMaterials(float vs) {
   { auto& m = def(ICE, "Ice", 0xd8f0ff, 917, 2100, 2.2f, 40, "Frozen water.");
     m.melt = 0.5f; m.solidifyTo = ICE; m.transparent = true; m.roughness = 0.1f; m.pattern = P_NONE; m.friction = 0.05f; }
   def(STEAM, "Steam", 0xffffff, 0.6f, 2000, 0.02f, 0, "Water vapour.").phase = GAS;
+
+  // Tensile (and bending) strength, Pa. Within one part, neighbouring voxels
+  // are held together by this; between parts, by their joint (structure.cpp).
+  // Typical values for the real materials; soil is cohesive but weak, so an
+  // undercut bank or a wide tunnel caves in.
+  const std::pair<Mat, float> tensile[] = {
+      {BEDROCK, INFINITY}, {STONE, 1e7f}, {DIRT, 1.5e4f}, {GRASS, 2.5e4f}, {OAK, 5e7f}, {PINE, 3e7f}, {LEAVES, 2.5e7f} /* a voxel of foliage stands in for the twigs (wood) holding it */,
+      {BRICK, 3e6f}, {MORTAR, 5e5f}, {CONCRETE, 1e7f}, {STEEL, 4e8f}, {IRON, 1.5e8f}, {COPPER, 2e8f}, {ALU, 2e8f},
+      {GLASS, 3e7f}, {BULBGLASS, 2e7f}, {RUBBER, 1.5e7f}, {PLASTIC, 4e7f}, {LIION, 2e7f}, {TERM_POS, 2e8f},
+      {TERM_NEG, 2e8f}, {FILAMENT, 1e8f}, {MOTOR, 1e8f}, {SHAFT, 5e8f}, {SWITCH_ON, 5e7f}, {SWITCH_OFF, 5e7f},
+      {NICHROME, 3e8f}, {SOLAR, 5e7f}, {CHARGE, 1e6f}, {PROPELLANT, 2e6f}, {TILE, 3e6f}, {CHARCOAL, 3e5f},
+      {BRASS, 3e8f}, {BASALT, 1.5e7f}, {CANVAS, 2e7f}, {BARK, 5e6f}, {MAGNET, 3e7f}, {GOLD, 1.2e8f},
+      {PAINT_RED, 4e8f}, {PAINT_BLUE, 4e8f}, {PAINT_WHITE, 4e8f}, {CARBON, 6e8f}, {ICE, 1e6f}};
+  for (auto& [m, t] : tensile) MATS[m].tensile = t;
 
   const float vol = vs * vs * vs;
   const float litres = vol / 0.001f;

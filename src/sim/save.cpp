@@ -383,6 +383,19 @@ bool readSim(Reader& r, Sim& s, MatMap& mats, bool& replaced) {
 
   if (!readVolume(r, s.world, mats, maxComp)) return false;
   if (s.world.nx != (int)s.world.bx * BS || s.world.solidBelow == false) return r.fail("save's world grid is malformed");
+  // Saves from 2.1 and earlier stored water as fractional fills (fuel > 0).
+  // Water is whole voxels now: round them, carrying the remainder from cell
+  // to cell so the total stays within one voxel of what was saved.
+  float waterCarry = 0;
+  std::vector<ivec3> drained;
+  s.world.forEach([&](int x, int y, int z, Brick* br, int l) {
+    if (br->mat[l] != WATER || br->fuel[l] <= 0) return;
+    waterCarry += br->fuel[l];
+    br->fuel[l] = 0;
+    if (waterCarry >= 0.5f) waterCarry -= 1;
+    else drained.push_back(ivec3(x, y, z));
+  });
+  for (auto& c : drained) s.world.set(c.x, c.y, c.z, AIR);
 
   if (!r.tag("BODY")) return false;
   uint32_t nb = r.count(1u << 20, 100, "body");
@@ -455,6 +468,12 @@ bool readSim(Reader& r, Sim& s, MatMap& mats, bool& replaced) {
     if (!r.ok) break;
     if (!finite3(d.p) || !finite3(d.v) || !std::isfinite(d.temp) || !std::isfinite(d.fill)) return r.fail("debris has non-finite values");
     if (d.comp >= maxComp) d.comp = 0;
+    if (d.mat == WATER) {  // 2.1 droplets could carry part of a voxel
+      waterCarry += d.fill;
+      d.fill = 1;
+      if (waterCarry < 0.5f) continue;
+      waterCarry -= 1;
+    }
     s.debris.push_back(d);
   }
 
@@ -486,6 +505,9 @@ bool readSim(Reader& r, Sim& s, MatMap& mats, bool& replaced) {
     if (!readFloatRuns(r, a.T) || !readFloatRuns(r, a.smk) || !readFloatRuns(r, a.stm)) return false;
     a.texDirty = true;
   }
+  // Local structural checks start from the last full solve's loads: work them
+  // out again for the loaded world without changing anything in it.
+  if (r.ok) s.checkAllStructures(false);
   return r.ok;
 }
 

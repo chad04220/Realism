@@ -3,6 +3,7 @@
 // visual effects, plus the systems that move energy between them: impacts,
 // heat conduction, radiation, fire, melting, fluids, circuits and explosions.
 #include <memory>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include "body.h"
@@ -20,7 +21,7 @@ struct Debris {          // a single loose voxel in flight
   uint32_t comp;
   uint8_t bounces;
   uint8_t aux = 0;       // molten: what it was
-  float fill = 1;        // water: how much of a cell it carries
+  float fill = 1;        // unused: water is whole voxels (kept for the save format)
 };
 
 enum FxKind : uint8_t { FX_FIRE, FX_SMOKE, FX_SPARK, FX_STEAM, FX_DUST, FX_FLASH, FX_SPRAY, FX_EMBER };
@@ -87,7 +88,9 @@ class Sim {
   // Live statistics for the HUD.
   struct {
     int burning = 0, hot = 0, awake = 0, contacts = 0, poweredDevices = 0, circuits = 0;
-    float thermalMs = 0, physicsMs = 0, fluidMs = 0, electricMs = 0;
+    float thermalMs = 0, physicsMs = 0, fluidMs = 0, electricMs = 0, structureMs = 0;
+    int collapses = 0;          // structural failures since the world began
+    long bondsFailed = 0;       // bonds that broke under load (not pieces merely cut off)
     double heatJ = 0;
   } stats;
 
@@ -145,6 +148,7 @@ class Sim {
   void stepFluids(float tick);
   void stepWater(std::vector<int64_t>& list, float tick);
   void settleWater();
+  bool placeWater(ivec3 c, float temp);     // add one water voxel at/above c (at the surface if c is water)
   vec3 waterCurrent(const vec3& p) const;   // mean water flow here, m/s
   std::vector<vec3> waterFlow;              // per air cell
   std::vector<float> waterFlowN;
@@ -152,17 +156,61 @@ class Sim {
   void stepDevices(float dt);
   void stepDebris(float dt);
   void stepFx(float dt);
-  void processSupport();
+  void processSupport();               // structure.cpp: load paths, overloaded bonds break
+  // Every hanging voxel in the world (after building a scene). apply=false
+  // only records the loads for later local checks (after loading a save).
+  void checkAllStructures(bool apply = true);
+  // Structural checks are batched a few times a second (fire changes hundreds
+  // of voxels a second). A player's blow, blast or build is checked on the
+  // very next step; flushStructure() checks pending changes right now.
+  void structureUrgent() { supportUrgent_ = true; }
+  void flushStructure() { supportUrgent_ = true; processSupport(); }
 
  private:
   friend struct save::Access;
+  std::vector<uint64_t> supportVisit_;  // structure.cpp: one bit per world cell while gathering clusters
+  std::vector<uint64_t> supportOk_;     // ...and for matter already found connected to the ground this pass
+  float lastSupportTime_ = -1;
+  bool fullCheck_ = false;              // checkAllStructures: solve whole clusters, no throttle
+  bool dryRun_ = false;                 // ...and change nothing
+  bool supportUrgent_ = false;          // check on the next step, whatever the batching
+  // The last solved load through each hanging voxel: route length to the
+  // ground, load carried (N) and its moment about the voxel (N m, x and z).
+  struct VoxLoad { float dist, load, mx, mz; };
+  // Open-addressing table keyed by packKey (hundreds of thousands of entries
+  // are written per check; node-based maps were most of its cost).
+  struct LoadTable {
+    std::vector<int64_t> keys;
+    std::vector<VoxLoad> vals;
+    size_t count = 0;
+    static constexpr int64_t EMPTY = INT64_MIN;
+    void clear() { keys.assign(1 << 20, EMPTY); vals.resize(keys.size()); count = 0; }
+    size_t slot(int64_t k) const { return (size_t)(((uint64_t)k * 0x9E3779B97F4A7C15ull) >> 20) & (keys.size() - 1); }
+    const VoxLoad* find(int64_t k) const {
+      if (keys.empty()) return nullptr;
+      for (size_t i = slot(k);; i = (i + 1) & (keys.size() - 1)) {
+        if (keys[i] == k) return &vals[i];
+        if (keys[i] == EMPTY) return nullptr;
+      }
+    }
+    void put(int64_t k, const VoxLoad& v) {
+      if (keys.empty()) clear();
+      if ((count + 1) * 2 > keys.size()) grow();
+      for (size_t i = slot(k);; i = (i + 1) & (keys.size() - 1)) {
+        if (keys[i] == k) { vals[i] = v; return; }
+        if (keys[i] == EMPTY) { keys[i] = k; vals[i] = v; count++; return; }
+      }
+    }
+    void grow() {
+      std::vector<int64_t> ok;
+      std::vector<VoxLoad> ov;
+      ok.swap(keys); ov.swap(vals);
+      keys.assign(ok.size() * 2, EMPTY); vals.resize(keys.size()); count = 0;
+      for (size_t i = 0; i < ok.size(); i++) if (ok[i] != EMPTY) put(ok[i], ov[i]);
+    }
+  } loadState_;
   float thermalAcc_ = 0, fluidAcc_ = 0, electricAcc_ = 0, airAcc_ = 0;
   void airCoupling(float dt);
-  // Visited set for the support flood: one bit per world cell. The flood is
-  // single-threaded and only needs to know which cells this particular walk
-  // has already queued, so a byte or word per cell would be wasted memory
-  // (16 MB at the default world size instead of 512 MB).
-  std::vector<uint64_t> supportVisit_;
 };
 
 extern Sim* g_sim;

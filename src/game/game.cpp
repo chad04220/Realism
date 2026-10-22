@@ -108,6 +108,7 @@ bool Game::init(const Args& args) {
   scene = buildScene(sim);
   sim.settleWater();
   sim.initAir();
+  sim.checkAllStructures();  // whatever the scene can't hold up falls now, not on the first hammer blow
   // Let everything settle onto its supports, then put it to sleep.
   for (int i = 0; i < 90; i++) sim.step(1.f / 60.f);
   for (auto& b : sim.bodies) { b->vel = vec3(0); b->angVel = vec3(0); b->asleep = true; }
@@ -675,6 +676,7 @@ void Game::useKey() {
 }
 
 void Game::chiselAt(const Hit& h, float radius, float energy) {
+  sim.structureUrgent();
   Body* B = h.body >= 0 ? sim.bodies[h.body].get() : nullptr;
   Volume& v = B ? B->vol : sim.world;
   int r = (int)std::ceil(radius);
@@ -967,6 +969,7 @@ void Game::useTools(float dt, plat::Input& in) {
     case T_BUILD:
       if (hit_.hit && hit_.t < 7.f) {
         if (Lp || (L && repeat_ <= 0)) {
+          sim.structureUrgent();  // new weight: check what it hangs on straight away
           repeat_ = 0.18f;
           if (buildPart_ >= 0 && buildPart_ < (int)salvage.size()) {
             const Template& t = *salvage[buildPart_];
@@ -1079,6 +1082,7 @@ void Game::resetWorld() {
   scene = buildScene(sim);
   sim.settleWater();
   sim.initAir();
+  sim.checkAllStructures();  // whatever the scene can't hold up falls now, not on the first hammer blow
   for (int i = 0; i < 90; i++) sim.step(1.f / 60.f);
   for (auto& b : sim.bodies) { b->vel = vec3(0); b->angVel = vec3(0); b->asleep = true; }
   sim.events.clear();

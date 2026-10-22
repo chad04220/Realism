@@ -12,6 +12,7 @@ static bool brittle(uint8_t m) {
 
 void Sim::impact(const Hit& h, float E, const vec3& dir, bool canDetach) {
   if (!h.hit || E <= 0) return;
+  structureUrgent();  // what this knocks out may have been holding something up
   Body* B = h.body >= 0 && h.body < (int)bodies.size() ? bodies[h.body].get() : nullptr;
   Volume& v = B ? B->vol : world;
   Cell c = v.get(h.cell.x, h.cell.y, h.cell.z);
@@ -145,6 +146,7 @@ void Sim::fracture(Volume& v, const vec3& c, float R, int nseeds, Body* owner) {
 
 void Sim::explode(const vec3& p, float E, int sourceBody) {
   (void)sourceBody;
+  structureUrgent();
   event(EV_EXPLODE, p, E);
   if (airReady) air.blast(p, E);
   // Energy available to break one voxel at distance r: the blast energy spread

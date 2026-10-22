@@ -467,6 +467,11 @@ bool Game::selftest() {
               b.fov >= 40 && b.exposure <= 4 && b.uiScale >= 0.5f && b.sensitivity > 0 && b.volume <= 1,
           "settings sanitize clamps out-of-range values");
   }
+  // Every voxel of the shipped scene is held up by its neighbours: building it
+  // must not overload a single bond (loose specks with no neighbours at all
+  // may drop, but nothing may break).
+  fprintf(stderr, "  scene structure: %ld bonds overloaded, %d collapses at build\n", sim.stats.bondsFailed, sim.stats.collapses);
+  check(sim.stats.bondsFailed == 0, "the shipped scene holds itself up, bond by bond");
   // Lamp bulb should be powered.
   bool lampLit = false, fanOff = true;
   for (auto& c : comps()) {
@@ -600,15 +605,15 @@ bool Game::selftest() {
           if (x == 6 || z == 6) { c.mat = STONE; c.comp = bc; } else c.mat = WATER;
           sim.putWorld(x0 + x, y0 + y, z0 + z, c);
         }
-    sim.settleWater();
+    // Water voxels in the basin, standing or in flight: whole voxels, so the
+    // count must not change at all.
+    const vec3 bLo = vec3((float)x0, (float)y0, (float)z0) * vs, bHi = vec3((float)(x0 + N), (float)(y0 + H + 2), (float)(z0 + N)) * vs;
     auto fillSum = [&]() {
-      double m = 0;
-      for (int x = 0; x < N; x++) for (int z = 0; z < N; z++) for (int y = 0; y < H + 2; y++) {
-        if (W.mat(x0 + x, y0 + y, z0 + z) != WATER) continue;
-        float f = W.brick(x0 + x, y0 + y, z0 + z)->fuel[lidx(x0 + x, y0 + y, z0 + z)];
-        m += f > 0 ? f : 1.f;
-      }
-      for (auto& d : sim.debris) if (d.mat == WATER) m += d.fill;
+      long m = 0;
+      for (int x = 0; x < N; x++) for (int z = 0; z < N; z++) for (int y = 0; y < H + 2; y++)
+        if (W.mat(x0 + x, y0 + y, z0 + z) == WATER) m++;
+      for (auto& d : sim.debris)
+        if (d.mat == WATER && d.p.x >= bLo.x && d.p.y >= bLo.y && d.p.z >= bLo.z && d.p.x < bHi.x && d.p.y < bHi.y && d.p.z < bHi.z) m++;
       return m;
     };
     // Punch a hole 4 cells up the tank wall: the head above it is ~16 cells.
@@ -624,24 +629,149 @@ bool Game::selftest() {
     check(vmax > expect * 0.6f && vmax < expect * 1.4f, "water jets from a hole at Torricelli speed");
     // Take the tank away: the water should surge out and level across the basin.
     for (int x = 0; x <= 6; x++) for (int z = 0; z <= 6; z++) if (x == 6 || z == 6) for (int y = 0; y < H; y++) sim.putWorld(x0 + x, y0 + y, z0 + z, Cell{});
-    double m0 = fillSum();
+    long m0 = fillSum();
     for (int i = 0; i < 480; i++) sim.step(1.f / 60.f);
-    double m1 = fillSum();
+    long m1 = fillSum();
     // Depth of each column.
     double s1 = 0, s2 = 0;
     for (int x = 0; x < N; x++)
       for (int z = 0; z < N; z++) {
         float hcol = 0;
-        for (int y = 0; y < H; y++) {
-          if (W.mat(x0 + x, y0 + y, z0 + z) != WATER) continue;
-          float f = W.brick(x0 + x, y0 + y, z0 + z)->fuel[lidx(x0 + x, y0 + y, z0 + z)];
-          hcol += f > 0 ? f : 1.f;
-        }
+        for (int y = 0; y < H; y++) if (W.mat(x0 + x, y0 + y, z0 + z) == WATER) hcol += 1;
         s1 += hcol; s2 += hcol * hcol;
       }
     double mean = s1 / (N * N), sd = std::sqrt(std::max(0.0, s2 / (N * N) - mean * mean));
-    fprintf(stderr, "  basin after 8 s: water %.0f -> %.0f, depth %.2f +- %.2f voxels\n", m0, m1, mean, sd);
-    check(m1 > m0 * 0.98 && m1 < m0 * 1.02 && sd < 0.2, "water surges out and levels across a basin");
+    fprintf(stderr, "  basin after 8 s: %ld -> %ld water voxels, depth %.2f +- %.2f voxels\n", m0, m1, mean, sd);
+    check(m1 == m0 && sd < 0.5, "water surges out and levels across a basin, voxel for voxel");
+    // Connected containers: two shafts joined at the bottom. Water poured into
+    // one rises in the other until both stand at the same height.
+    for (int x = -1; x <= N; x++) for (int z = -1; z <= N; z++) for (int y = 0; y <= H; y++) sim.putWorld(x0 + x, y0 + y, z0 + z, Cell{});
+    for (int x = -1; x <= 12; x++)
+      for (int z = -1; z <= 3; z++)
+        for (int y = -1; y <= H + 1; y++) {
+          bool shaftA = x >= 0 && x <= 2 && z >= 0 && z <= 2 && y >= 0;
+          bool shaftB = x >= 9 && x <= 11 && z >= 0 && z <= 2 && y >= 0;
+          bool channel = x >= 0 && x <= 11 && z >= 0 && z <= 2 && y >= 0 && y <= 1;
+          Cell c;
+          if (!(shaftA || shaftB || channel)) { c.mat = STONE; c.comp = bc; }
+          sim.putWorld(x0 + x, y0 + y, z0 + z, c);
+        }
+    for (int x = 0; x <= 2; x++) for (int z = 0; z <= 2; z++) for (int y = 2; y < 18; y++) {
+      Cell c; c.mat = WATER; sim.putWorld(x0 + x, y0 + y, z0 + z, c);
+    }
+    auto level = [&](int xa) {
+      int top = -1;
+      for (int y = 0; y <= H; y++) if (W.mat(x0 + xa, y0 + y, z0 + 1) == WATER) top = y;
+      return top;
+    };
+    auto shaftWater = [&]() {
+      long n = 0;
+      for (int x = 0; x <= 11; x++) for (int z = 0; z <= 2; z++) for (int y = 0; y <= H; y++) if (W.mat(x0 + x, y0 + y, z0 + z) == WATER) n++;
+      for (auto& d : sim.debris)
+        if (d.mat == WATER && d.p.x >= x0 * vs && d.p.x < (x0 + 12) * vs && d.p.z >= z0 * vs && d.p.z < (z0 + 3) * vs && d.p.y >= y0 * vs) n++;
+      return n;
+    };
+    const long u0 = shaftWater();
+    for (int i = 0; i < 360; i++) sim.step(1.f / 60.f);
+    int la = level(1), lb = level(10);
+    const long u1 = shaftWater();
+    fprintf(stderr, "  connected shafts after 6 s: levels %d and %d voxels, water %ld -> %ld\n", la, lb, u0, u1);
+    check(u1 == u0 && la >= 2 && lb >= 2 && std::abs(la - lb) <= 1, "water finds one level in connected containers");
+    for (int x = -1; x <= 12; x++) for (int z = -1; z <= 3; z++) for (int y = -1; y <= H + 1; y++) sim.putWorld(x0 + x, y0 + y, z0 + z, Cell{});
+  }
+  // Structure: nothing holds a voxel up but its neighbours.
+  {
+    Volume& W = sim.world;
+    const float vs = sim.vs;
+    const int gy = (int)std::lround(1.0f / vs);  // first cell above the lawn
+    const int X0 = (int)(13.2f / vs), Z0 = (int)(0.6f / vs);
+    auto clearArea = [&]() {
+      for (int x = X0 - 2; x < X0 + (int)(2.4f / vs); x++)
+        for (int z = Z0 - 2; z < Z0 + (int)(1.6f / vs); z++)
+          for (int y = gy; y < gy + (int)(1.2f / vs); y++) if (W.mat(x, y, z) != AIR) sim.removeWorld(x, y, z, false);
+      for (int i = 0; i < 12; i++) sim.step(1.f / 60.f);
+      // Anything the clearing knocked loose has been carried away.
+      for (size_t i = 0; i < sim.bodies.size();) {
+        Body& b = *sim.bodies[i];
+        vec3 c = b.pos / vs;
+        if (!b.frozen && c.x > X0 - 8 && c.x < X0 + 2.4f / vs + 8 && c.z > Z0 - 8 && c.z < Z0 + 1.6f / vs + 8) sim.removeBody((int)i);
+        else i++;
+      }
+      sim.debris.clear();
+    };
+    auto put = [&](int x, int y, int z, uint8_t m, uint32_t c) { Cell cell; cell.mat = m; cell.comp = c; sim.putWorld(x, y, z, cell); };
+    auto standing = [&](int x, int y, int z) { return W.mat(x, y, z) != AIR; };
+    // Check the edits now (as a player's own edit would be), cascade a few
+    // times, and give what broke a moment to fall clear.
+    auto settle = [&]() {
+      for (int i = 0; i < 4; i++) { sim.flushStructure(); sim.step(1.f / 60.f); }
+      for (int i = 0; i < 30; i++) sim.step(1.f / 60.f);
+    };
+    // A stone pillar to build out from: anchored, column after column, on the lawn.
+    const int H = (int)std::lround(0.5f / vs), P = 4;
+    auto pillar = [&]() {
+      uint32_t pc = newComp(makePart("Test pillar", "Test", joints::cast));
+      for (int x = X0; x < X0 + P; x++) for (int z = Z0; z < Z0 + P; z++) for (int y = gy; y < gy + H; y++) put(x, y, z, STONE, pc);
+    };
+    // A cantilever of material m sticking out of the pillar's side near its
+    // top: depth d and length L in metres, joined to the pillar as one part.
+    auto cantilever = [&](uint8_t m, float d, float L) {
+      clearArea();
+      pillar();
+      settle();
+      uint32_t bc = newComp(makePart("Test beam", "Test", joints::cast));
+      const int nd = std::max(1, (int)std::lround(d / vs)), nl = std::max(1, (int)std::lround(L / vs));
+      for (int x = X0 + P; x < X0 + P + nl; x++)
+        for (int z = Z0; z < Z0 + P; z++)
+          for (int y = gy + H - nd; y < gy + H; y++) put(x, y, z, m, bc);
+      settle();
+      settle();
+      return standing(X0 + P + nl - 1, gy + H - 1, Z0 + 1);
+    };
+    // Soil is cohesive but weak: beam theory gives L = sqrt(sigma d / (3 rho g))
+    // ~ 0.18 m for a 10 cm deep soil cantilever.
+    const float Lsoil = std::sqrt(MATS[DIRT].tensile * 0.1f / (3 * MATS[DIRT].density * 9.81f));
+    bool shortSoil = cantilever(DIRT, 0.1f, Lsoil * 0.75f);
+    bool longSoil = cantilever(DIRT, 0.1f, Lsoil * 1.35f);
+    bool longSteel = cantilever(STEEL, 0.1f, 0.35f);
+    fprintf(stderr, "  cantilevers (predicted soil limit %.2f m): soil %.2f m %s, soil %.2f m %s, steel 0.35 m %s\n", Lsoil,
+            Lsoil * 0.75f, shortSoil ? "stands" : "falls", Lsoil * 1.35f, longSoil ? "stands" : "falls", longSteel ? "stands" : "falls");
+    check(shortSoil && !longSoil && longSteel, "a cantilever stands or breaks as beam theory says");
+    // Resting is not attached: a brick merely leaning on a wall's side falls;
+    // the same brick glued there stays.
+    auto sideBrick = [&](const Joint& j) {
+      clearArea();
+      pillar();
+      settle();
+      uint32_t bc = newComp(makePart("Test brick", "Test", j));
+      for (int x = X0 + P; x < X0 + P + 4; x++) for (int z = Z0; z < Z0 + 2; z++) for (int y = gy + H - 3; y < gy + H; y++) put(x, y, z, BRICK, bc);
+      settle();
+      return standing(X0 + P + 1, gy + H - 2, Z0);
+    };
+    bool resting = sideBrick(joints::resting), glued = sideBrick(joints::glued);
+    fprintf(stderr, "  brick against a wall: resting %s, glued %s\n", resting ? "stays" : "falls", glued ? "stays" : "falls");
+    check(!resting && glued, "only what is attached is held: a resting brick falls, a glued one stays");
+    // Tension: a steel block hung from a beam by a single voxel.
+    auto hung = [&](uint8_t link) {
+      clearArea();
+      pillar();
+      settle();
+      uint32_t arm = newComp(makePart("Test arm", "Test", joints::cast));
+      for (int x = X0 + P; x < X0 + P + 12; x++) for (int z = Z0; z < Z0 + P; z++) for (int y = gy + H - 4; y < gy + H; y++) put(x, y, z, STEEL, arm);
+      settle();
+      uint32_t lc = newComp(makePart("Test link", "Test", joints::cast));
+      put(X0 + P + 9, gy + H - 5, Z0 + 1, link, lc);
+      uint32_t blk = newComp(makePart("Test weight", "Test", joints::cast));
+      for (int x = X0 + P + 8; x < X0 + P + 12; x++) for (int z = Z0; z < Z0 + 4; z++) for (int y = gy + H - 9; y < gy + H - 5; y++) put(x, y, z, STEEL, blk);
+      // The weight and its link are one part with the link's material only where the link is.
+      settle();
+      settle();
+      return standing(X0 + P + 9, gy + H - 7, Z0 + 1);
+    };
+    bool soilLink = hung(DIRT), steelLink = hung(STEEL);
+    fprintf(stderr, "  steel block hung by one voxel: soil link %s, steel link %s\n", soilLink ? "holds" : "snaps", steelLink ? "holds" : "snaps");
+    check(!soilLink && steelLink, "a hanging weight snaps a weak link and not a strong one");
+    clearArea();
   }
   // Radiation: a glowing block warms a plank 20 cm away across open air.
   {

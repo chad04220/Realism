@@ -236,26 +236,13 @@ bool march(vec3 ro, vec3 rd, float tLimit, out Hit h, inout vec3 trans, inout ve
 #endif
     uvec4 d = vox(v);
     uint m = d.r;
-#ifdef WORLD
-    if (m == MAT_WATER && d.g < 250u && vox(v + ivec3(0, 1, 0)).r != MAT_WATER) {
-      // A partly filled water cell: only the part under its surface is water.
-      float ys = float(v.y) + max(float(d.g) / 255.0, 0.04);
-      float tx = min(side.x, min(side.y, side.z));
-      float yin = ro.y + rd.y * t, yout = ro.y + rd.y * tx;
-      if (yin > ys && yout > ys) m = 0u;
-      else if (yin > ys && !inTrans) { t += (ys - yin) / rd.y; face = vec3(0, 1, 0); }
-    }
-#endif
     if (m != 0u) {
       if (isTrans(m)) {
         if (!inTrans || m != transMat) {
           // Entering glass or water: Fresnel reflection of the sky.
+          // The face of the voxel it entered: water is drawn as the voxels it
+          // is, like glass, with no surface of its own.
           vec3 n = length(face) > 0.0 ? face : -rd;
-          if (m == MAT_WATER && n.y > 0.5) {
-            vec3 pw = ro + rd * t;
-            n = normalize(vec3(sin(pw.x * 0.9 + uTime * 1.7) * 0.06 + sin(pw.z * 1.3 - uTime * 1.1) * 0.04, 1.0,
-                               cos(pw.z * 0.8 + uTime * 1.3) * 0.06));
-          }
 #ifndef WORLD
           vec3 nw = normalize(uObjRot * n);
           vec3 rdw = normalize(uObjRot * rd);

@@ -1,85 +1,86 @@
 // Liquids flow and powders slump on the world grid; loose debris flies
 // ballistically and settles back into the world where it lands.
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <unordered_map>
+#include <unordered_set>
 #include "sim.h"
 
-// Water is simulated by volume rather than as whole voxels. Each water cell
-// holds a fill from 0 to 1 (stored in the otherwise unused fuel field; 0
-// means full). Pressure is the depth of the water standing on a cell, so
-// water flows sideways from a taller column to a shorter one; pushed into a
-// full cell it rises to the top of that column, which is how a pond finds
-// one level and water in a connected pipe climbs to the height of its tank.
-// Water with nothing beneath it leaves the grid as falling droplets and
-// splashes back in where it lands, and water escaping from under a head of
-// water into open air becomes a jet with Torricelli's speed, sqrt(2 g h).
+// Water is whole voxels, like everything else. A water voxel with nothing
+// under it falls (one cell at a time over a short drop, as a free-falling
+// voxel over a longer one) and pours over edges. Pressure acts on each
+// connected body of water as a whole: voxels are taken from its highest
+// surface and put into its lowest open cells, which is how a pond finds one
+// level, a heap spreads out and water in a pipe climbs to the height of its
+// tank. An opening well below the surface jets: the voxels leave at
+// Torricelli's speed, sqrt(2 g h), as many per second as the hole passes.
+// Water is conserved exactly, voxel for voxel.
 namespace {
-constexpr float W_MIN = 0.004f;   // thinner than this can't wet a new cell
-inline float fillOf(float f) { return f > 0 ? f : 1.f; }
+inline bool isWaterOpen(uint8_t m) { return m == AIR; }
 }  // namespace
 
 void Sim::settleWater() {
-  // Standing water starts full and at rest.
+  // Every water cell is a whole voxel (the fuel field is unused for water).
   world.forEach([&](int, int, int, Brick* br, int l) {
     if (br->mat[l] == WATER) br->fuel[l] = 0;
   });
 }
 
+// Put a voxel of water as near as possible to `c`. Landing in water, it joins
+// that body at its lowest open cell (where its pressure would push it anyway);
+// landing inside something solid, it comes out on top; otherwise it goes
+// where it is. Returns false only if there is nowhere at all.
+bool Sim::placeWater(ivec3 c, float temp) {
+  if (!world.inb(c.x, 0, c.z)) return false;
+  c.y = std::clamp(c.y, 0, world.ny - 1);
+  auto put = [&](const ivec3& q) {
+    Cell cell;
+    cell.mat = WATER; cell.temp = temp;
+    putWorld(q.x, q.y, q.z, cell);
+    if (temp != AMBIENT) markHot(world, worldHot, q.x, q.y, q.z);
+    return true;
+  };
+  for (int up = 0; up < 64 && world.matI(c) != AIR && world.matI(c) != WATER && c.y + 1 < world.ny; up++) c.y++;
+  uint8_t m0 = world.matI(c);
+  if (m0 == AIR) return put(c);
+  if (m0 == WATER) {
+    std::unordered_set<int64_t> seen{packKey(c.x, c.y, c.z)};
+    std::vector<ivec3> stack{c};
+    bool found = false;
+    ivec3 best;
+    while (!stack.empty() && seen.size() < 200000) {
+      ivec3 q = stack.back();
+      stack.pop_back();
+      for (auto& d : DIRS6) {
+        ivec3 n(q.x + d[0], q.y + d[1], q.z + d[2]);
+        if (!world.inb(n.x, n.y, n.z)) continue;
+        uint8_t m = world.matI(n);
+        if (m == WATER) { if (seen.insert(packKey(n.x, n.y, n.z)).second) stack.push_back(n); }
+        else if (m == AIR && (!found || n.y < best.y)) { best = n; found = true; }
+      }
+    }
+    if (found) return put(best);
+  }
+  for (int r = 1; r <= 3; r++)
+    for (int dy = -r; dy <= r; dy++)
+      for (int dz = -r; dz <= r; dz++)
+        for (int dx = -r; dx <= r; dx++) {
+          if (std::max({std::abs(dx), std::abs(dy), std::abs(dz)}) != r) continue;
+          ivec3 q(c.x + dx, c.y + dy, c.z + dz);
+          if (world.inb(q.x, q.y, q.z) && world.matI(q) == AIR) return put(q);
+        }
+  fprintf(stderr, "realism: nowhere to put a water voxel near %d %d %d\n", c.x, c.y, c.z);
+  return false;
+}
+
 void Sim::stepWater(std::vector<int64_t>& list, float tick) {
   const float g = 9.81f;
-  // Fill of a cell: -1 blocked, 0 open air, otherwise the water's fill.
-  auto fillAt = [&](int x, int y, int z) -> float {
-    if (!world.inb(x, y, z)) return -1;
-    const Brick* b = world.brick(x, y, z);
-    if (!b) return 0;
-    int l = lidx(x, y, z);
-    uint8_t m = b->mat[l];
-    if (m == AIR) return 0;
-    if (m == WATER) return fillOf(b->fuel[l]);
-    return -1;
-  };
-  // Pressure head at a cell's floor: the depth of water standing on it,
-  // counted up the column (memoised for this step).
-  std::unordered_map<int64_t, float> headMemo;
-  headMemo.reserve(list.size() * 2);
-  std::vector<std::pair<int64_t, float>> colStack;
-  auto headAt = [&](int x, int y, int z) -> float {
-    int64_t k0 = packKey(x, y, z);
-    auto it = headMemo.find(k0);
-    if (it != headMemo.end()) return it->second;
-    colStack.clear();
-    float above = 0;
-    int yy = y;
-    while (true) {
-      int64_t kk = packKey(x, yy, z);
-      auto jt = headMemo.find(kk);
-      if (jt != headMemo.end()) { above = jt->second; break; }
-      float f = fillAt(x, yy, z);
-      if (f <= 0) { above = 0; break; }
-      colStack.push_back({kk, std::min(f, 1.f) * vs});
-      if (f < 0.98f || yy - y > 400) { above = 0; break; }
-      yy++;
-    }
-    for (int i = (int)colStack.size() - 1; i >= 0; i--) {
-      above += colStack[i].second;
-      headMemo[colStack[i].first] = above;
-    }
-    return colStack.empty() ? 0.f : headMemo[k0];
-  };
-  // The first cell up a column, starting at y, with room for water
-  // (open air or a part-filled cell); -1 if something solid caps it.
-  auto topOf = [&](int x, int y, int z) -> int {
-    for (int yy = y; yy < y + 400; yy++) {
-      float f = fillAt(x, yy, z);
-      if (f < 0) return -1;
-      if (f < 0.999f) return yy;
-    }
-    return -1;
-  };
   if (waterFlow.size() != air.T.size()) { waterFlow.assign(air.T.size(), vec3(0)); waterFlowN.assign(air.T.size(), 0); }
   std::fill(waterFlowN.begin(), waterFlowN.end(), 0.f);
   std::vector<vec3> flowNew(waterFlow.size(), vec3(0));
   auto coarse = [&](int x, int y, int z) {
+    if (air.cellVox <= 0) return -1;
     int cx = x / air.cellVox, cy = y / air.cellVox, cz = z / air.cellVox;
     if (cx < 0 || cy < 0 || cz < 0 || cx >= air.nx || cy >= air.ny || cz >= air.nz) return -1;
     return air.cid(cx, cy, cz);
@@ -91,141 +92,147 @@ void Sim::stepWater(std::vector<int64_t>& list, float tick) {
       if (m && isFluidish(m)) fluidActive.insert(packKey(xx, yy, zz));
     }
   };
-  // Store a fill, telling the renderer when the visible level changes.
-  auto storeFill = [&](Brick* b, int l, int x, int y, int z, float oldF, float f) {
-    b->fuel[l] = std::fabs(f - 1) < 1e-4f ? 0.f : f;  // 0 means exactly full
-    if ((int)(std::min(1.f, oldF) * 255) != (int)(std::min(1.f, f) * 255)) world.markDirty(x, y, z);
+  auto flow = [&](int x, int y, int z, const vec3& v) {
+    int cc = coarse(x, y, z);
+    if (cc >= 0) { flowNew[cc] += v; waterFlowN[cc] += 1; }
   };
-  struct Drop { vec3 p, v; float fill, temp; };
-  std::vector<Drop> drops;
-  // Moves are applied as they are decided (in place), each limited by the
-  // room left in its target, so water is conserved exactly and no cell is
-  // ever filled past full by several neighbours at once.
+  // Move one water voxel to an empty cell (keeping its temperature).
+  auto move = [&](int x, int y, int z, int nx_, int ny_, int nz_) {
+    Cell c = world.get(x, y, z);
+    world.set(x, y, z, AIR);
+    world.put(nx_, ny_, nz_, c);
+    if (c.temp != AMBIENT) markHot(world, worldHot, nx_, ny_, nz_);
+    fluidActive.insert(packKey(nx_, ny_, nz_));
+    activate(x, y, z);
+    activate(nx_, ny_, nz_);
+    flow(x, y, z, vec3((float)(nx_ - x), (float)(ny_ - y), (float)(nz_ - z)) * (vs / tick));
+  };
+  static const int dirs[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+
+  // 1. Local motion: falling and pouring over edges, bottom-up so columns
+  // fall together.
+  std::vector<int64_t> settled;
+  settled.reserve(list.size());
   for (int64_t k : list) {
     ivec3 q = unpackKey(k);
     int x = q.x, y = q.y, z = q.z;
-    Brick* br = world.brick(x, y, z);
-    if (!br) continue;
-    int l = lidx(x, y, z);
-    if (br->mat[l] != WATER) continue;
-    const float T = br->temp[l];
-    const float f0 = fillOf(br->fuel[l]);
-    float rem = f0;
-    int cc = coarse(x, y, z);
-    if (cc >= 0) waterFlowN[cc] += 1;
-    ivec3 best(0, 0, 0);
-    float bestF = 0;
-    auto give = [&](int nx_, int ny_, int nz_, float f, bool tiny = false) -> float {
-      float tf = fillAt(nx_, ny_, nz_);
-      if (tf < 0) return 0;
-      f = std::min({f, rem, 1.f - tf});
-      if (f <= 1e-4f) return 0;
-      if (tf == 0) {
-        if (f < W_MIN && !tiny) return 0;  // too little to wet a new cell
-        Cell c;
-        c.mat = WATER; c.temp = T; c.fuel = f >= 0.9999f ? 0.f : f;
-        world.put(nx_, ny_, nz_, c);
-      } else {
-        Brick* nb = world.brick(nx_, ny_, nz_);
-        int nl = lidx(nx_, ny_, nz_);
-        nb->temp[nl] = (nb->temp[nl] * tf + T * f) / (tf + f);
-        storeFill(nb, nl, nx_, ny_, nz_, tf, tf + f);
+    if (world.mat(x, y, z) != WATER) continue;
+    if (y > 0 && world.mat(x, y - 1, z) == AIR) {
+      if (y > 1 && world.mat(x, y - 2, z) == AIR) {
+        // Nothing to stand on: it falls freely.
+        Cell c = world.get(x, y, z);
+        world.set(x, y, z, AIR);
+        activate(x, y, z);
+        spawnDebris(cellCenter(x, y, z), vec3(rng().range(-.04f, .04f), -std::sqrt(2 * g * vs), rng().range(-.04f, .04f)), c);
+        continue;
       }
-      if (T != AMBIENT) markHot(world, worldHot, nx_, ny_, nz_);
-      rem -= f;
-      if (f > bestF) { bestF = f; best = ivec3(nx_, ny_, nz_); }
-      fluidActive.insert(packKey(nx_, ny_, nz_));
-      activate(nx_, ny_, nz_);
-      if (cc >= 0) flowNew[cc] += vec3((float)(nx_ - x), (float)(ny_ - y), (float)(nz_ - z)) * (f * vs / tick);
-      return f;
-    };
-    float below = fillAt(x, y - 1, z);
-    if (below == 0 && rem >= 0.03f && fillAt(x, y - 2, z) == 0 && fillAt(x, y + 1, z) <= 0) {
-      // Nothing under it: it falls freely as a droplet.
-      drops.push_back({cellCenter(x, y, z), vec3(rng().range(-.05f, .05f), -0.8f, rng().range(-.05f, .05f)), rem, T});
-      world.set(x, y, z, AIR);
-      activate(x, y, z);
+      move(x, y, z, x, y - 1, z);
       continue;
     }
-    // Down: the cell below fills first.
-    if (below >= 0 && below < 1) give(x, y - 1, z, rem, true);
-    // Overfull (a droplet landed in it): the excess rises up the column.
-    if (rem > 1) {
-      int t = topOf(x, y + 1, z);
-      if (t >= 0) give(x, t, z, rem - 1, true);
-    }
-    // Sideways, down the difference in head.
-    if (rem > 0) {
-      float hs = headAt(x, y, z);
-      struct Out { int dx, dz; float nf, h, f; };
-      Out outs[4] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-      float sum = 0, hj = hs;
-      for (auto& o : outs) {
-        o.nf = fillAt(x + o.dx, y, z + o.dz);
-        o.h = o.nf < 0 ? hs : o.nf == 0 ? 0.f : headAt(x + o.dx, y, z + o.dz);
-        if (o.nf > 0) hj = std::max(hj, o.h);
-        // Two water columns trade only at the highest level where both hold
-        // water; otherwise every cell down the column would move the same
-        // surface difference and the pond would slosh forever.
-        bool handledAbove = o.nf > 0 && fillAt(x, y + 1, z) > 0 && fillAt(x + o.dx, y + 1, z + o.dz) > 0;
-        // A small dead band lets level water come to rest.
-        o.f = (o.nf < 0 || handledAbove) ? 0 : std::clamp((hs - o.h) / vs - 0.002f, 0.f, 1.f) * 0.24f;
-        sum += o.f;
-      }
-      float avail = std::min(rem, 1.f);
-      float scale = sum > avail * 0.9f ? avail * 0.9f / sum : 1.f;
-      int r0 = rng().next() & 3;
-      for (int i = 0; i < 4; i++) {
-        Out& o = outs[(i + r0) & 3];
-        float f = o.f * scale;
-        if (f < 0.0003f) continue;
-        int nx_ = x + o.dx, nz_ = z + o.dz;
-        bool overDrop = fillAt(nx_, y - 1, nz_) == 0 && fillAt(nx_, y - 2, nz_) == 0;
-        if (o.nf == 0 && f >= 0.03f && (overDrop || hj > 4 * vs)) {
-          // Over an edge, or out of a hole with a head of water behind it: it
-          // leaves as a jet at Torricelli's speed.
-          vec3 dir((float)o.dx, 0, (float)o.dz);
-          vec3 v0 = hj > 1.5f * vs ? dir * std::sqrt(2 * g * (hj - 0.5f * vs)) : dir * 0.3f;
-          f = std::min(f, rem);
-          drops.push_back({cellCenter(x, y, z) + dir * (vs * 0.9f), v0 + vec3(rng().range(-.06f, .06f), rng().range(-.04f, .04f), rng().range(-.06f, .06f)), f, T});
-          rem -= f;
-          if (cc >= 0) flowNew[cc] += v0;
-          continue;
-        }
-        if (o.nf >= 0.999f) {
-          // Into a full cell: it rises to the top of that column.
-          int t = topOf(nx_, y, nz_);
-          if (t >= 0) give(nx_, t, nz_, f);
-          continue;
-        }
-        give(nx_, y, nz_, f);
+    int r = rng().next() & 3;
+    bool moved = false;
+    for (int i = 0; i < 4 && !moved; i++) {
+      int dx = dirs[(i + r) & 3][0], dz = dirs[(i + r) & 3][1];
+      if (y > 0 && world.mat(x + dx, y, z + dz) == AIR && world.inb(x + dx, y, z + dz) && world.mat(x + dx, y - 1, z + dz) == AIR) {
+        move(x, y, z, x + dx, y, z + dz);  // over the edge; it drops from there next tick
+        moved = true;
       }
     }
-    // Write back what's left. A scrap too thin to keep goes with the main flow.
-    br = world.brick(x, y, z);
-    if (rem < W_MIN && rem > 0 && bestF > 0) give(best.x, best.y, best.z, rem, true);
-    if (rem < W_MIN && rem > 1e-5f) {
-      // Otherwise it joins any water touching it.
-      const int nb[5][3] = {{0, -1, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}};
-      for (auto& d : nb)
-        if (rem > 1e-5f && fillAt(x + d[0], y + d[1], z + d[2]) > 0) give(x + d[0], y + d[1], z + d[2], rem, true);
-    }
-    if (rem <= 1e-5f) {
-      world.set(x, y, z, AIR);
-      activate(x, y, z);
-      continue;
-    }
-    storeFill(br, l, x, y, z, f0, rem);
-    if (f0 - rem > 2e-4f) { fluidActive.insert(k); activate(x, y, z); }
+    if (!moved) settled.push_back(k);
   }
-  for (auto& d : drops) {
-    if (d.fill <= 0) continue;
-    Cell c;
-    c.mat = WATER; c.temp = d.temp;
-    spawnDebris(d.p, d.v, c);
-    if (!debris.empty()) { debris.back().fill = d.fill; debris.back().life = 8; }
-    ivec3 q = cellOf(d.p);
-    activate(q.x, q.y, q.z);
+
+  // 2. Pressure, per connected body of water. Only bodies touched by an
+  // active voxel are walked, so still ponds cost nothing.
+  std::unordered_set<int64_t> seen;
+  std::vector<int64_t> stack;
+  for (int64_t seed : settled) {
+    if (seen.count(seed)) continue;
+    ivec3 s0 = unpackKey(seed);
+    if (world.mat(s0.x, s0.y, s0.z) != WATER) continue;
+    std::vector<ivec3> tops;                  // water with open air above
+    std::vector<std::pair<ivec3, ivec3>> slots;  // (open cell, the water beside or below it)
+    std::unordered_set<int64_t> slotSeen;
+    stack.assign(1, seed);
+    seen.insert(seed);
+    size_t count = 0;
+    const size_t CAP = 600000;
+    while (!stack.empty() && count < CAP) {
+      int64_t k = stack.back();
+      stack.pop_back();
+      count++;
+      ivec3 c = unpackKey(k);
+      for (int d = 0; d < 6; d++) {
+        int xx = c.x + DIRS6[d][0], yy = c.y + DIRS6[d][1], zz = c.z + DIRS6[d][2];
+        if (!world.inb(xx, yy, zz)) continue;
+        uint8_t m = world.mat(xx, yy, zz);
+        int64_t kk = packKey(xx, yy, zz);
+        if (m == WATER) {
+          if (seen.insert(kk).second) stack.push_back(kk);
+        } else if (isWaterOpen(m) && d != 3) {  // not below: that is handled by falling
+          if (d == 2) tops.push_back(c);
+          if (slotSeen.insert(kk).second) slots.push_back({ivec3(xx, yy, zz), c});
+        }
+      }
+    }
+    static const bool dbg = getenv("REALISM_DEBUG_WATER") != nullptr;
+    if (dbg) fprintf(stderr, "water body at %d %d %d: %zu voxels, %zu tops, %zu slots, lowest slot y %d, top y %d\n", s0.x, s0.y,
+                     s0.z, count, tops.size(), slots.size(), slots.empty() ? -1 : std::min_element(slots.begin(), slots.end(), [](auto& a, auto& b) { return a.first.y < b.first.y; })->first.y,
+                     tops.empty() ? -1 : std::max_element(tops.begin(), tops.end(), [](auto& a, auto& b) { return a.y < b.y; })->y);
+    if (tops.empty() || slots.empty()) continue;
+    std::sort(tops.begin(), tops.end(), [](const ivec3& a, const ivec3& b) { return a.y > b.y; });
+    std::sort(slots.begin(), slots.end(), [](const auto& a, const auto& b) { return a.first.y < b.first.y; });
+    const int surface = tops[0].y;
+    size_t ti = 0;
+    int moves = 0;
+    // Not yet level: the body stays awake until it is, even on a pass where
+    // a slow leak happens to move nothing.
+    if (surface > slots[0].first.y) fluidActive.insert(seed);
+    const int MAX_MOVES = 4096;
+    for (auto& [slot, from] : slots) {
+      if (ti >= tops.size() || moves >= MAX_MOVES) break;
+      // Highest remaining surface voxel that hasn't been moved this pass.
+      while (ti < tops.size() && world.mat(tops[ti].x, tops[ti].y, tops[ti].z) != WATER) ti++;
+      if (ti >= tops.size()) break;
+      if (tops[ti].y <= slot.y) break;   // level (to within a voxel): nothing more to do
+      if (world.matI(slot) != AIR) continue;
+      const int depth = surface - slot.y;  // voxels of water standing above this opening
+      const bool side = slot.y == from.y;
+      if (side && depth >= 3) {
+        // An opening under a head of water: a jet at sqrt(2 g h), passing
+        // v * dt / vs voxels per tick through each opening.
+        const float h = (depth + 0.5f) * vs;
+        const float v = std::sqrt(2 * g * h);
+        const vec3 dir = normalize(vec3((float)(slot.x - from.x), 0, (float)(slot.z - from.z)));
+        float want = v * tick / vs;
+        int n = (int)want + (rng().f() < want - (int)want ? 1 : 0);
+        for (int i = 0; i < n && ti < tops.size(); i++) {
+          while (ti < tops.size() && world.mat(tops[ti].x, tops[ti].y, tops[ti].z) != WATER) ti++;
+          if (ti >= tops.size() || tops[ti].y <= slot.y) break;
+          ivec3 t = tops[ti++];
+          Cell c = world.get(t.x, t.y, t.z);
+          world.set(t.x, t.y, t.z, AIR);
+          activate(t.x, t.y, t.z);
+          fluidActive.insert(packKey(t.x, t.y - 1, t.z));
+          // Leaves from inside the opening itself, never from the cell beyond it.
+          spawnDebris(cellCenter(slot.x, slot.y, slot.z) + dir * (vs * rng().range(-0.3f, 0.3f)),
+                      dir * v + vec3(rng().range(-.05f, .05f), rng().range(-.03f, .03f), rng().range(-.05f, .05f)), c);
+          flow(from.x, from.y, from.z, dir * v);
+          moves++;
+        }
+        continue;
+      }
+      ivec3 t = tops[ti++];
+      Cell c = world.get(t.x, t.y, t.z);
+      world.set(t.x, t.y, t.z, AIR);
+      world.put(slot.x, slot.y, slot.z, c);
+      if (c.temp != AMBIENT) markHot(world, worldHot, slot.x, slot.y, slot.z);
+      activate(t.x, t.y, t.z);
+      activate(slot.x, slot.y, slot.z);
+      fluidActive.insert(packKey(slot.x, slot.y, slot.z));
+      fluidActive.insert(packKey(t.x, t.y - 1, t.z));
+      flow(from.x, from.y, from.z, vec3((float)(slot.x - from.x), 0, (float)(slot.z - from.z)) * (vs / tick));
+      moves++;
+    }
   }
   // Currents for floating things: a smoothed mean flow per air cell.
   for (size_t c = 0; c < waterFlow.size(); c++) {
@@ -359,13 +366,8 @@ void Sim::stepDebris(float dt) {
       if (!world.inb(c.x, c.y, c.z) && c.y < 0) solidHit = true;
       bool liquidDeb = isLiquid(d.mat);
       if (d.mat == WATER && m == WATER) {
-        // A droplet falling into water joins it.
-        Brick* wb = world.brick(c.x, c.y, c.z);
-        int wl = lidx(c.x, c.y, c.z);
-        float f0 = wb->fuel[wl] > 0 ? wb->fuel[wl] : 1.f;
-        wb->temp[wl] = (wb->temp[wl] * f0 + d.temp * d.fill) / (f0 + d.fill);
-        wb->fuel[wl] = f0 + d.fill;
-        fluidActive.insert(packKey(c.x, c.y, c.z));
+        // A falling water voxel landing in water joins it at its surface.
+        placeWater(c, d.temp);
         if (rng().f() < 0.05f && length(d.v) > 2) emit(FX_SPRAY, np, vec3(0, 1.0f, 0) + rng().unitVec() * 0.4f, 0.4f, vs);
         d = debris.back(); debris.pop_back();
         continue;
@@ -425,29 +427,26 @@ void Sim::stepDebris(float dt) {
         d.p = np;
       }
     }
+    // Water is never lost: a voxel whose time runs out lands where it is.
+    if (kill && !deposit && d.mat == WATER && d.life <= 0) { kill = false; deposit = true; }
+    if (deposit && d.mat == WATER) {
+      ivec3 c = cellOf(d.p);
+      placeWater(c, d.temp);
+      kill = true;
+      deposit = false;
+    }
     if (deposit) {
       // Settle into the nearest free cell at or above where it landed.
       ivec3 c = cellOf(d.p);
       bool placed = false;
       for (int up = 0; up < 4 && !placed; up++) {
         ivec3 q(c.x, c.y + up, c.z);
-        if (d.mat == WATER && world.matI(q) == WATER) {
-          // Water has flowed in under the droplet: it simply joins.
-          Brick* wb = world.brick(q.x, q.y, q.z);
-          int wl = lidx(q.x, q.y, q.z);
-          float f0 = wb->fuel[wl] > 0 ? wb->fuel[wl] : 1.f;
-          wb->fuel[wl] = f0 + d.fill;
-          fluidActive.insert(packKey(q.x, q.y, q.z));
-          placed = true;
-          break;
-        }
         if (world.inb(q.x, q.y, q.z) && world.matI(q) == AIR) {
           Cell cell;
           cell.mat = d.mat; cell.temp = d.temp; cell.comp = d.comp; cell.aux = d.aux;
           // A lone fragment is loose rubble: no longer part of its original part.
           if (cell.comp && comp(cell.comp).type != C_TERRAIN) cell.comp = 0;
           cell.hp = 200;
-          if (d.mat == WATER) cell.fuel = d.fill;
           putWorld(q.x, q.y, q.z, cell);
           if (isFluidish(d.mat)) fluidActive.insert(packKey(q.x, q.y, q.z));
           placed = true;

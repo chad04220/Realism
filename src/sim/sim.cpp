@@ -21,7 +21,6 @@ void Sim::init(const SimSettings& s) {
   fluidActive.clear();
   supportSeeds.clear();
   worldSpecials.clear();
-  supportVisit_.clear();
   events.clear();
   radiators.clear();
   radiantTotal = 0;
@@ -35,6 +34,8 @@ void Sim::init(const SimSettings& s) {
   timeScale = 1;
   stats = {};
   thermalAcc_ = fluidAcc_ = electricAcc_ = airAcc_ = 0;
+  lastSupportTime_ = -1;
+  loadState_.clear();
   g_sim = this;
 }
 
@@ -163,6 +164,8 @@ void Sim::worldChanged(int x, int y, int z, uint8_t oldMat) {
   int64_t key = packKey(x, y, z);
   if (isSpecialElectric(m) || MATS[m].wire) worldSpecials.insert(key); else worldSpecials.erase(key);
   if (isFluidish(m)) fluidActive.insert(key);
+  // New matter is new weight on whatever holds it up.
+  if (m != AIR && isSolid(m) && !(oldMat != AIR && isSolid(oldMat))) supportSeeds.push_back(key);
   if (m == AIR || isFluidish(m)) {
     for (auto& d : DIRS6) {
       int xx = x + d[0], yy = y + d[1], zz = z + d[2];
@@ -205,73 +208,7 @@ void Sim::removeWorld(int x, int y, int z, bool makeDebris, const vec3& kick) {
   worldChanged(x, y, z, c.mat);
 }
 
-// Anything no longer connected (through solid voxels) to the bedrock falls.
-void Sim::processSupport() {
-  if (supportSeeds.empty()) return;
-  const size_t n = (size_t)world.nx * world.ny * world.nz;
-  const size_t words = (n + 63) / 64;
-  if (supportVisit_.size() != words) supportVisit_.assign(words, 0);
-  auto lin = [&](int x, int y, int z) { return (size_t)x + (size_t)world.nx * ((size_t)z + (size_t)world.nz * y); };
-  auto visited = [&](int x, int y, int z) {
-    size_t i = lin(x, y, z);
-    return (supportVisit_[i >> 6] >> (i & 63)) & 1ull;
-  };
-  auto markVisited = [&](int x, int y, int z) {
-    size_t i = lin(x, y, z);
-    supportVisit_[i >> 6] |= 1ull << (i & 63);
-  };
-  auto unmarkVisited = [&](int x, int y, int z) {
-    size_t i = lin(x, y, z);
-    supportVisit_[i >> 6] &= ~(1ull << (i & 63));
-  };
-  std::vector<int64_t> seeds;
-  seeds.swap(supportSeeds);
-  const size_t LIMIT = 4000000;
-  std::vector<ivec3> stack;
-  std::vector<int64_t> list;
-  for (int64_t s : seeds) {
-    ivec3 p = unpackKey(s);
-    uint8_t m = world.matI(p);
-    if (!world.inb(p.x, p.y, p.z) || m == AIR || !isSolid(m)) continue;
-    if (visited(p.x, p.y, p.z)) continue;
-    stack.clear(); list.clear();
-    stack.push_back(p);
-    markVisited(p.x, p.y, p.z);
-    bool supported = false;
-    while (!stack.empty() && !supported) {
-      ivec3 c = stack.back();
-      stack.pop_back();
-      list.push_back(packKey(c.x, c.y, c.z));
-      if (c.y == 0 || world.matI(c) == BEDROCK || list.size() > LIMIT) { supported = true; break; }
-      // Push "down" last so the depth-first walk heads for the ground first.
-      static const int order[6][3] = {{0, 1, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}, {0, -1, 0}};
-      for (auto& d : order) {
-        int xx = c.x + d[0], yy = c.y + d[1], zz = c.z + d[2];
-        if (!world.inb(xx, yy, zz)) continue;
-        uint8_t nm = world.mat(xx, yy, zz);
-        if (nm == AIR || !isSolid(nm)) continue;
-        if (visited(xx, yy, zz)) continue;
-        markVisited(xx, yy, zz);
-        stack.push_back({xx, yy, zz});
-      }
-    }
-    // This walk is done: clear every mark it made so the next seed (and the
-    // next call) starts from a clean slate. Queued cells that were never popped
-    // matter too, otherwise a later seed could mistake them for visited.
-    for (int64_t k : list) {
-      ivec3 c = unpackKey(k);
-      unmarkVisited(c.x, c.y, c.z);
-    }
-    for (const ivec3& c : stack) unmarkVisited(c.x, c.y, c.z);
-    if (!supported && !list.empty()) {
-      if (list.size() <= 10) {
-        for (int64_t k : list) { ivec3 c = unpackKey(k); removeWorld(c.x, c.y, c.z, true); }
-      } else {
-        detachWorld(list);
-      }
-    }
-  }
-}
+// processSupport() and the structural checks live in structure.cpp.
 
 // ---------------------------------------------------------------- bodies
 
@@ -702,7 +639,10 @@ void Sim::emit(FxKind k, const vec3& p, const vec3& v, float life, float size, c
 void Sim::spawnDebris(const vec3& p, const vec3& v, const Cell& c) {
   if (c.mat == AIR) return;
   if (debris.size() >= 30000) {
-    emit(FX_DUST, p, v * 0.3f, 1.2f, vs * 3, matLinear(c.mat));
+    // Too much in flight: water goes straight to where it would land (it
+    // must never vanish); anything else turns to dust.
+    if (c.mat == WATER) placeWater(cellOf(p), c.temp);
+    else emit(FX_DUST, p, v * 0.3f, 1.2f, vs * 3, matLinear(c.mat));
     return;
   }
   Debris d;

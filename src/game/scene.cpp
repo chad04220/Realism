@@ -201,12 +201,35 @@ SceneInfo buildScene(Sim& s) {
     }
     // Rafters and clay tiles.
     for (float rx = x0 - 0.1f; rx <= x1 + 0.1f; rx += 0.5f) {
-      uint32_t c = newComp(makePart("Rafter", "Shed roof", joints::nailed));
       float ra = std::min(rx, x1 + 0.05f);
-      sh.with(OAK, c).boxIf(vec3(ra, top - 0.1f, z0 - 0.2f), vec3(ra + 0.05f, top + rise + 0.05f, z1 + 0.2f), [&](const vec3& p) {
+      // Past the gable walls the verge is finished with a thin pine barge
+      // board hung from the roof boards, not a full rafter.
+      const bool verge = rx < x0 || ra > x1;
+      uint32_t c = newComp(makePart(verge ? "Barge board" : "Rafter", "Shed roof", joints::nailed));
+      const float w = verge ? vs : 0.05f;
+      if (verge && ra > x1) ra = x1 + 0.1f - w;
+      // The tails run out to the eave so the roof boards and gutters are carried.
+      sh.with(verge ? PINE : OAK, c).boxIf(vec3(ra, top - 0.15f, z0 - 0.25f), vec3(ra + w, top + rise + 0.05f, z1 + 0.25f), [&](const vec3& p) {
         float ry = roofY(p.z);
         return p.y <= ry && p.y > ry - 0.1f;
       });
+    }
+    // Pine roof boards nailed across the rafters: the tiles rest on them and
+    // they carry the tiles' weight to the rafters, as on a real roof.
+    {
+      std::unordered_map<int, uint32_t> boardComp;
+      ivec3 a = sh.toCell(vec3(x0 - 0.15f, top - 0.2f, z0 - 0.25f)), b = sh.toCell(vec3(x1 + 0.15f, top + rise + 0.15f, z1 + 0.25f));
+      for (int y = a.y; y <= b.y; y++)
+        for (int z = a.z; z <= b.z; z++)
+          for (int x = a.x; x <= b.x; x++) {
+            vec3 p = sh.centre(x, y, z);
+            float ry = roofY(p.z);
+            if (!(p.y > ry && p.y <= ry + 0.025f)) continue;
+            int bj = (int)std::floor(std::fabs(p.z - zc) / 0.15f) * (p.z < zc ? -1 : 1);
+            auto it = boardComp.find(bj);
+            if (it == boardComp.end()) it = boardComp.emplace(bj, newComp(makePart("Roof board", "Shed roof", joints::nailed))).first;
+            W.set(x, y, z, PINE, it->second);
+          }
     }
     std::unordered_map<int64_t, uint32_t> tileComp;
     sh.mat = TILE;
@@ -216,7 +239,7 @@ SceneInfo buildScene(Sim& s) {
         for (int x = a.x; x <= b.x; x++) {
           vec3 p = sh.centre(x, y, z);
           float ry = roofY(p.z);
-          if (!(p.y > ry && p.y <= ry + 0.05f)) continue;
+          if (!(p.y > ry + 0.025f && p.y <= ry + 0.075f)) continue;
           // Each tile covers 25 cm across and ~25 cm down the slope.
           int ti = (int)std::floor((p.x - x0 + 0.15f) / 0.25f);
           float s_ = std::fabs(p.z - zc);
@@ -252,13 +275,15 @@ SceneInfo buildScene(Sim& s) {
     sh.with(STONE, sill).box(vec3(x0 - 0.075f, winY0 - 0.05f, winZ0 - 0.075f), vec3(x0 + 0.025f, winY0, winZ1 + 0.075f));
     uint32_t ridge = newComp(makePart("Ridge tile", "Shed roof", joints::mortar));
     sh.with(TILE, ridge).boxIf(vec3(x0 - 0.15f, top + rise - 0.05f, zc - 0.125f), vec3(x1 + 0.15f, top + rise + 0.125f, zc + 0.125f), [&](const vec3& p) {
-      return p.y > roofY(p.z) + 0.025f && p.y < roofY(zc) + 0.1f - std::fabs(p.z - zc) * 0.4f;
+      return p.y > roofY(p.z) + 0.05f && p.y < roofY(zc) + 0.125f - std::fabs(p.z - zc) * 0.4f;
     });
     for (int side = 0; side < 2; side++) {
-      uint32_t g = newComp(makePart("Gutter", "Shed roof", joints::screwed));
+      uint32_t g = newComp(makePart("Gutter", "Shed roof", joints::bolted));  // on brackets
       float ze = side ? z1 + 0.25f : z0 - 0.25f, dir = side ? 1.f : -1.f;
       float gy = roofY(ze) - 0.1f;
-      sh.with(STEEL, g).boxIf(vec3(x0 - 0.15f, gy, std::min(ze, ze + dir * 0.125f)), vec3(x1 + 0.15f, gy + 0.1f, std::max(ze, ze + dir * 0.125f)), [&](const vec3& p) {
+      // Its back runs one voxel in under the rafter tails it is bolted to.
+      const float back = ze - dir * vs;
+      sh.with(STEEL, g).boxIf(vec3(x0 - 0.15f, gy, std::min(back, ze + dir * 0.125f)), vec3(x1 + 0.15f, gy + 0.1f, std::max(back, ze + dir * 0.125f)), [&](const vec3& p) {
         float u = (p.z - ze) * dir;  // 0 at the roof edge, 0.125 at the lip
         return p.y < gy + 0.03f || u > 0.1f || u < 0.025f;
       });
@@ -305,7 +330,8 @@ SceneInfo buildScene(Sim& s) {
     sh.with(CHARCOAL, ash).box(bl + vec3(wallT, wallT, wallT), vec3(hi.x - wallT, bl.y + wallT + 0.05f, hi.z - wallT));
     for (int k = 0; k < 3; k++) {
       uint32_t lg = newComp(makePart("Split log", obj, joints::resting));
-      float z = bl.z + 0.12f + k * 0.12f, y = bl.y + wallT + 0.1f + (k == 1 ? 0.08f : 0.f);
+      // Lying on the ember bed (their undersides just in it).
+      float z = bl.z + 0.12f + k * 0.12f, y = bl.y + wallT + 0.05f + 0.04f;
       sh.with(PINE, lg).cylinder(vec3(bl.x + 0.1f, y, z), vec3(hi.x - 0.1f, y, z), 0.045f);
     }
     W.forEach([&](int x, int y, int z, Brick* br, int l) {
@@ -317,10 +343,10 @@ SceneInfo buildScene(Sim& s) {
     sh.clear(vec3(fc.x - 0.11f, top - 0.2f, fc.z - 0.11f), vec3(fc.x + 0.11f, roofY(fc.z) + 0.25f, fc.z + 0.11f));
     uint32_t flue = newComp(makePart("Flue pipe", obj, joints::pressfit));
     sh.with(STEEL, flue).tube(fc, vec3(fc.x, flueTop, fc.z), 0.075f, 0.05f);
-    uint32_t flash = newComp(makePart("Roof flashing", obj, joints::screwed));
+    uint32_t flash = newComp(makePart("Roof flashing", obj, joints::resting));  // lies on the roof and seals it; holds nothing up
     sh.with(ALU, flash).boxIf(vec3(fc.x - 0.15f, roofY(fc.z) - 0.1f, fc.z - 0.15f), vec3(fc.x + 0.15f, roofY(fc.z) + 0.2f, fc.z + 0.15f), [&](const vec3& p) {
       float r = length(vec3(p.x - fc.x, 0, p.z - fc.z));
-      return r > 0.075f && r < 0.15f && p.y > roofY(p.z) && p.y < roofY(p.z) + 0.03f;
+      return r > 0.075f && r < 0.15f && p.y > roofY(p.z) + 0.025f && p.y < roofY(p.z) + 0.055f;
     });
     uint32_t cap = newComp(makePart("Rain cap", obj, joints::screwed));
     sh.with(STEEL, cap).cylinder(vec3(fc.x, flueTop + 0.08f, fc.z), vec3(fc.x, flueTop + 0.105f, fc.z), 0.13f);
@@ -348,8 +374,9 @@ SceneInfo buildScene(Sim& s) {
     vec3 tp(12.3f, GY, 4.6f);
     uint32_t trunk = newComp(makePart("Trunk", "Oak tree", joints::grown));
     uint32_t bark = newComp(makePart("Bark", "Oak tree", joints::grown));
-    sh.with(OAK, trunk).cylinder(tp - vec3(0, 0.35f, 0), tp + vec3(0, 2.5f, 0), 0.12f);
-    sh.with(BARK, bark).tube(tp, tp + vec3(0, 2.3f, 0), 0.15f, 0.115f);
+    // The trunk's wood runs on up into the crown: that is what the crown grows from.
+    sh.with(OAK, trunk).cylinder(tp - vec3(0, 0.35f, 0), tp + vec3(0, 2.9f, 0), 0.12f);
+    sh.with(BARK, bark).tube(tp, tp + vec3(0, 2.0f, 0), 0.15f, 0.115f);  // the crown grows from the wood above
     for (int r = 0; r < 4; r++) {
       float a = r * PI * 0.5f + 0.4f;
       uint32_t root = newComp(makePart("Root", "Oak tree", joints::grown));
@@ -458,14 +485,22 @@ SceneInfo buildScene(Sim& s) {
       bool alongX = f < 2;
       int fixed = alongX ? (f == 0 ? lz[0] : lz[1] + 1) : (f == 2 ? lx[0] : lx[1] + 1);
       int a = alongX ? lx[0] : lz[0], b = alongX ? lx[1] + 1 : lz[1] + 1;
+      // Two diagonals; each step is filled up to the next so the strip is
+      // joined face to face (corner contact holds nothing) at any voxel size.
+      int prev1 = -1, prev2 = -1;
       for (int k = 0; k <= b - a; k++) {
         float t = (float)k / (b - a);
         int y1 = gy + 4 + (int)(t * (ty0 - gy - 8)), y2 = gy + 4 + (int)((1 - t) * (ty0 - gy - 8));
-        for (int yy : {y1, y2})
-          for (int t2 = 0; t2 < 2; t2++) {
-            if (alongX) W.set(a + k, yy + t2, fixed, STEEL, br);
-            else W.set(fixed, yy + t2, a + k, STEEL, br);
+        auto strip = [&](int y, int& prev) {
+          int lo = prev < 0 ? y : std::min(prev, y), hi = prev < 0 ? y : std::max(prev, y);
+          for (int yy = lo; yy <= hi + 1; yy++) {
+            if (alongX) W.set(a + k, yy, fixed, STEEL, br);
+            else W.set(fixed, yy, a + k, STEEL, br);
           }
+          prev = y;
+        };
+        strip(y1, prev1);
+        strip(y2, prev2);
       }
     }
     // Downpipe on the pond side: 2x2 voxels of water inside a steel wall,
@@ -496,11 +531,16 @@ SceneInfo buildScene(Sim& s) {
         W.put(gx - 1, y, pz + dz, c);
       }
     for (int y = spoutY + 3; y <= spoutY + 6; y++) { Cell c; c.mat = STEEL; c.comp = gate; W.put(gx - 1, y, pz, c); }
-    for (int a = 0; a < 24; a++) {
-      float ang = a * 2 * PI / 24;
+    // Handwheel: four spokes to a rim joined face to face.
+    auto wheel = [&](int hx, int hz) { Cell c; c.mat = IRON; c.comp = gate; c.aux = 0; W.put(hx, spoutY + 6, hz, c); };
+    for (int r = 1; r <= 3; r++) { wheel(gx - 1 + r, pz); wheel(gx - 1 - r, pz); wheel(gx - 1, pz + r); wheel(gx - 1, pz - r); }
+    int lastX = INT32_MIN, lastZ = INT32_MIN;
+    for (int a = 0; a <= 96; a++) {
+      float ang = a * 2 * PI / 96;
       int hx = gx - 1 + (int)std::lround(std::cos(ang) * 3), hz = pz + (int)std::lround(std::sin(ang) * 3);
-      Cell c; c.mat = IRON; c.comp = gate; c.aux = 0;
-      W.put(hx, spoutY + 6, hz, c);
+      if (lastX != INT32_MIN && hx != lastX && hz != lastZ) wheel(lastX, hz);  // fill the corner
+      wheel(hx, hz);
+      lastX = hx; lastZ = hz;
     }
     // The gate's outer face is open air at the spout mouth.
     for (int y = spoutY; y <= spoutY + 1; y++)

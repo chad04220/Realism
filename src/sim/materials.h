@@ -37,6 +37,7 @@ struct Material {
   uint8_t solidifyTo;    // what a melt of this freezes into
   float boil;            // liquid -> vapour
   float explosive;       // J per litre
+  float tensile;         // Pa: what a bond within this material holds in tension/bending (0 = holds only by resting)
   const char* info;
   // Derived at start-up:
   float voxMass = 0, heatCap = 0, tough = 0, power = 0;

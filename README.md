@@ -26,7 +26,13 @@ The world uses **2.5 cm voxels** (64 voxels per litre). It is about 16 m × 16 m
   - Hits above a part's **joint strength** knock the whole part loose: a mortared brick, a nailed plank, a bolted leg.
   - Weaker hits chip a crater.
   - Brittle materials (glass, brick, stone, concrete) **crack** along Voronoi lines into chunks.
-- Anything no longer connected to the bedrock breaks off and falls.
+
+**Structure: nothing floats**
+- Every voxel has weight, and only its neighbours hold it up: the voxel it rests on, the voxels it is bonded to beside it, or the one it hangs from.
+- Every face between two voxels is a bond with a real strength. Inside one part it is the material's own tensile strength (soil ~15 kPa, brick 3 MPa, oak 50 MPa, steel 400 MPa). Between parts it is their joint: mortar, nails, screws, glue, bolts, a weld. Loose rubble and parts that merely rest carry nothing sideways or in tension, so they can only lie on what is under them.
+- Load finds its way to the ground the way it does in a real structure, through the stiffest path, shared between every support it has. Sideways bonds are checked in shear and bending (a run of bonded voxels acts as a beam section), and bonds hung from above in tension.
+- An overloaded section breaks and what it carried falls, after the load has had a chance to find another way round. Undercut a soil bank or dig a tunnel too wide and the roof caves in; a 10 cm soil ledge holds out to about 18 cm, a brick one much further, steel further still; saw into a branch and it snaps when what is left can't carry the rest.
+- Structural changes are checked a few times a second (and immediately after a blow, a blast, chiselling or building); see `HANDOFF.md` for how the check is kept local and fast.
 
 **Heat**
 - Conduction runs between every pair of touching voxels using real conductivities and heat capacities.
@@ -53,9 +59,11 @@ The world uses **2.5 cm voxels** (64 voxels per litre). It is about 16 m × 16 m
 - Sand fuses into glass and water boils off.
 
 **Water**
-- Each water voxel holds a fill level, rendered as a smooth surface at that height.
-- Pressure is the depth of standing water: puddles spread and level out, and connected water finds one level.
-- Water falling over an edge becomes droplets that splash back in; a hole low in a tank squirts at Torricelli's speed, √(2gh).
+- Water is whole voxels, like everything else, and is drawn as the voxels it is: no special surface, no shader waves.
+- A water voxel with nothing under it free-falls; at an edge it pours over.
+- Pressure acts on each connected body of water: voxels move from its highest surface to its lowest open cells, so heaps spread, ponds find one level and water in connected containers stands at the same height.
+- An opening well below the surface jets: water leaves at Torricelli's speed, √(2gh), as many voxels per second as the hole passes.
+- Water is conserved exactly, voxel for voxel: nothing evaporates into thin air except by boiling.
 - Currents carry floating things along. Bodies float or sink by buoyancy.
 
 **Other fluids** — molten material, sand, ash and gravel flow and slump on the grid.
@@ -221,6 +229,8 @@ works over SSH and in CI. It builds the world and checks that:
 - saving and loading reproduces the world, bodies, parts, air and player exactly (compared by a state hash), and the loaded world keeps simulating;
 - corrupt, truncated, newer-format and missing saves are refused without touching the live world, and a damaged autosave falls back to the previous one;
 - killing the game in the middle of writing a save (12 times, at different moments) never damages the save already there (Linux/macOS);
+- water levels out in connected containers and keeps exactly the same number of voxels while it does;
+- building the scene overloads no bond; a soil cantilever stands at 0.75× and breaks at 1.35× its beam-theory length (σd/3ρg)^½ while a steel one stands; a brick merely resting against a wall falls and a glued one stays; a steel block hung by one voxel of soil snaps it and one of steel holds;
 - re-initialising the simulation clears the clock, bodies, effects, radiators, flow fields and statistics.
 
 Exit status is 0 when every check passes and 2 when one fails. `--help` lists

@@ -119,6 +119,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
         int airFaces = 0;
         vec3 nrm(0);
         bool water = false;
+        float Tlo = std::min(T, AMBIENT);  // nothing here can cool it below the coldest thing it touches
         for (int k = 0; k < 6; k++) {
           int xx = x + DIRS6[k][0], yy = y + DIRS6[k][1], zz = z + DIRS6[k][2];
           uint8_t n;
@@ -137,6 +138,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
           float G = 2 * M.k * N.k / (M.k + N.k) * vs;
           sumG += G;
           sumGT += G * Tn;
+          Tlo = std::min(Tlo, Tn);
           if (n == WATER) water = true;
           if (nf & F_BURN) {
             // Flames lick neighbouring fuel; much more strongly upwards.
@@ -157,6 +159,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
             airCell = air.openCellAt(wp);
             if (airCell >= 0) {
               Tair = air.T[airCell];
+              Tlo = std::min(Tlo, Tair);
               if ((fl & F_BURN) || std::fabs(T - Tair) > 40) vAir = length(air.velocity(wp));
             }
           }
@@ -197,6 +200,10 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
         float Tnew = (T + dt / C * (sumGT + extra)) / (1 + dt / C * sumG);
         // Radiation/convection can't push past ambient in one step.
         if ((T > AMBIENT && Tnew < AMBIENT && sumG == 0) || (T < AMBIENT && Tnew > AMBIENT && sumG == 0)) Tnew = AMBIENT;
+        // Radiation is applied explicitly; in a voxel with little heat capacity
+        // (foliage, bulb glass) a hot step could overshoot far below ambient
+        // and run away. Cooling only ever brings it down to its surroundings.
+        Tnew = std::clamp(Tnew, Tlo, 3600.f);
         if (std::fabs(Tnew - AMBIENT) < 0.05f && !(fl & F_BURN)) Tnew = AMBIENT;
         out[l] = Tnew;
         if (Tnew != AMBIENT || (fl & F_BURN)) {

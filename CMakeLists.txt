@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 # simulation self-test on CI and on machines without a graphics driver.
 option(REALISM_HEADLESS "Build the headless self-test target (no window or OpenGL)" OFF)
 
-project(Realism VERSION 2.1.0 LANGUAGES CXX)
+project(Realism VERSION 2.2.0 LANGUAGES CXX)
 if(WIN32 AND NOT REALISM_HEADLESS)
   enable_language(RC)
 endif()
