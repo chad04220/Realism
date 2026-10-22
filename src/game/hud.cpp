@@ -789,19 +789,26 @@ bool Game::selftest() {
           std::string e;
           for (;;) save::writeFile(savePath("killtest"), header, payload, e);
         }
-        usleep(3000 + k * 4500);
+        std::error_code tec;
+        const std::string tmp = savePath("killtest") + ".tmp";
+        if (k % 2 == 0) {
+          // Kill the moment the new file exists: always before it has been
+          // renamed over the old one, however fast the disk is.
+          double until = plat::now() + 2;
+          while (!std::filesystem::exists(tmp, tec) && plat::now() < until) {}
+        } else {
+          usleep(3000 + k * 4500);  // and at assorted other moments
+        }
         kill(pid, SIGKILL);
         waitpid(pid, nullptr, 0);
-        std::error_code tec;
-        std::string tmp = savePath("killtest") + ".tmp";
-        if (std::filesystem::exists(tmp, tec) && std::filesystem::file_size(tmp, tec) < 8 + header.size() + payload.size()) midWrite++;
+        if (std::filesystem::exists(tmp, tec)) midWrite++;  // died before the rename
         std::filesystem::remove(tmp, tec);
         std::string h2;
         std::vector<uint8_t> p2;
         if (save::readFile(savePath("killtest"), h2, p2, err) && p2 == payload) survived++;
         else fprintf(stderr, "  killed writer %d: %s\n", k, err.c_str());
       }
-      fprintf(stderr, "  killed the writer %d times (%d with a half-written file): %d left a loadable save\n", tries, midWrite,
+      fprintf(stderr, "  killed the writer %d times (%d before its rename): %d left a loadable save\n", tries, midWrite,
               survived);
       check(readable && survived == tries && midWrite > 0, "killing the game mid-save never damages the existing save");
     }
