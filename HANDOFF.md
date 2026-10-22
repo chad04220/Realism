@@ -301,7 +301,7 @@ Target budgets for the reference laptop at 1080p, default world:
 - Memory: ≤ 1.5 GB RSS and ≤ 1.5 GB VRAM at 0.025 m with a busy scene.
 - No allocation in the per-frame hot path except bounded FX/debris/event deques.
 
-### GPU path (added after 2.2.0, aimed at an RTX 3070 / 8 GB)
+### GPU path (2.3.0, aimed at an RTX 3070 / 8 GB)
 
 - `--benchmark` (hud.cpp `Game::benchmark`) renders six fixed views and prints
   GPU ms per pass from `GL_TIMESTAMP` queries read a frame late. On Mesa,
