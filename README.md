@@ -233,6 +233,10 @@ runs this self-test, and compiles the Windows build. Each run's Windows build
 (`Realism.exe` with `settings.cfg`) can be downloaded from the run's
 **Artifacts** section on GitHub for 30 days.
 
+Releases: pushing a tag like `v2.1.0` runs `.github/workflows/release.yml`,
+which runs the self-test, builds the Windows release and publishes it on the
+GitHub Releases page with the notes from `docs/releases/2.1.0.md`.
+
 ## Project state and next steps
 
 [`HANDOFF.md`](HANDOFF.md) is the working handoff for the next developer or AI

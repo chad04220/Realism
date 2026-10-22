@@ -1,0 +1,51 @@
+name: release
+
+# Pushing a tag like v2.1.0 runs the self-test, builds the Windows release and
+# publishes a GitHub Release with the zip attached. The release text comes from
+# docs/releases/<version>.md (the tag without its leading "v").
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  selftest:
+    name: Linux headless self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DREALISM_HEADLESS=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Run the simulation self-test
+        run: ./build/Realism --selftest
+
+  windows:
+    name: Windows release build
+    needs: selftest
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build -A x64
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Package
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart('v')
+          $dir = "Realism-$v-windows-x64"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item build/Release/Realism.exe, settings.cfg, README.md, THIRD_PARTY_NOTICES.md $dir/
+          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
+          "ZIP=$dir.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "NOTES=docs/releases/$v.md" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Realism ${{ github.ref_name }}
+          body_path: ${{ env.NOTES }}
+          files: ${{ env.ZIP }}
