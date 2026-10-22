@@ -103,6 +103,8 @@ bool readVolume(Reader& r, Volume& v, const MatMap& mats, uint32_t maxComp);
 // returning the payload.
 bool writeFile(const std::string& path, const std::string& header, const std::vector<uint8_t>& payload, std::string& err);
 bool readFile(const std::string& path, std::string& header, std::vector<uint8_t>& payload, std::string& err);
+// Just the JSON header, without reading or checking the payload (for listings).
+bool readHeader(const std::string& path, std::string& header);
 
 // Hash of everything that defines the simulated state (world and body voxels,
 // body transforms and velocities, components, the air). Used to prove a save/load

@@ -4,6 +4,12 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+#include "../core/jobs.h"
 
 namespace fs = std::filesystem;
 
@@ -193,16 +199,31 @@ Component readComponent(Reader& r) {
 void writeVolume(Writer& w, const Volume& v) {
   w.tag("VOL ");
   w.i32(v.nx); w.i32(v.ny); w.i32(v.nz); w.u8(v.solidBelow);
-  uint32_t n = 0;
-  for (auto& b : v.bricks) if (b && b->count) n++;
-  w.u32(n);
-  for (size_t i = 0; i < v.bricks.size(); i++) {
+  std::vector<uint32_t> live;
+  for (size_t i = 0; i < v.bricks.size(); i++) if (v.bricks[i] && v.bricks[i]->count) live.push_back((uint32_t)i);
+  w.u32((uint32_t)live.size());
+  auto encode = [&](Writer& out, uint32_t i) {
     const Brick* b = v.bricks[i].get();
-    if (!b || !b->count) continue;
-    w.u32((uint32_t)i);
-    writeRuns(w, b->mat); writeRuns(w, b->flags); writeRuns(w, b->hp); writeRuns(w, b->aux);
-    writeRuns(w, b->comp); writeRuns(w, b->temp); writeRuns(w, b->fuel);
+    out.u32(i);
+    writeRuns(out, b->mat); writeRuns(out, b->flags); writeRuns(out, b->hp); writeRuns(out, b->aux);
+    writeRuns(out, b->comp); writeRuns(out, b->temp); writeRuns(out, b->fuel);
+  };
+  if (live.size() < 256) {  // bodies, templates: not worth the threads
+    for (uint32_t i : live) encode(w, i);
+    return;
   }
+  // The world: thousands of bricks, encoded in parallel chunks and joined in
+  // order, so the file is identical to a serial encode.
+  const int chunk = 64, nChunks = (int)((live.size() + chunk - 1) / chunk);
+  std::vector<Writer> parts(nChunks);
+  Jobs::get().parallelFor(nChunks, 1, [&](int c0, int c1, int) {
+    for (int c = c0; c < c1; c++)
+      for (size_t k = (size_t)c * chunk; k < std::min(live.size(), (size_t)(c + 1) * chunk); k++) encode(parts[c], live[k]);
+  });
+  size_t total = 0;
+  for (auto& p : parts) total += p.buf.size();
+  w.buf.reserve(w.buf.size() + total);
+  for (auto& p : parts) w.buf.insert(w.buf.end(), p.buf.begin(), p.buf.end());
 }
 
 bool readVolume(Reader& r, Volume& v, const MatMap& mats, uint32_t maxComp) {
@@ -485,11 +506,18 @@ bool writeFile(const std::string& path, const std::string& header, const std::ve
   if (p.has_parent_path()) fs::create_directories(p.parent_path(), ec);
   std::string tmp = path + ".tmp";
   {
-    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+    FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) { err = "couldn't write " + tmp; return false; }
-    f.write((const char*)w.buf.data(), (std::streamsize)w.buf.size());
-    f.flush();
-    if (!f) { err = "disk full or write error saving " + path; f.close(); fs::remove(tmp, ec); return false; }
+    bool ok = fwrite(w.buf.data(), 1, w.buf.size(), f) == w.buf.size() && fflush(f) == 0;
+    // On disk, not just in the OS cache, before it replaces the old save: a
+    // power cut must leave either the old file or the complete new one.
+#ifdef _WIN32
+    ok = ok && _commit(_fileno(f)) == 0;
+#else
+    ok = ok && fsync(fileno(f)) == 0;
+#endif
+    ok = fclose(f) == 0 && ok;
+    if (!ok) { err = "disk full or write error saving " + path; fs::remove(tmp, ec); return false; }
   }
   fs::rename(tmp, path, ec);
   if (ec) {
@@ -529,6 +557,17 @@ bool readFile(const std::string& path, std::string& header, std::vector<uint8_t>
   if (fnv(FNV0, all.data(), all.size() - 8) != stored) { err = "save file is corrupt (checksum mismatch)"; return false; }
   payload.assign(r.p, r.p + pn);
   return true;
+}
+
+bool readHeader(const std::string& path, std::string& header) {
+  std::ifstream f(path, std::ios::binary);
+  char head[12];
+  if (!f.read(head, 12) || memcmp(head, "RSAV", 4) != 0) return false;
+  uint32_t n;
+  memcpy(&n, head + 8, 4);
+  if (n > 65536) return false;
+  header.resize(n);
+  return n == 0 || (bool)f.read(header.data(), n);
 }
 
 // ----------------------------------------------------------------- hashing

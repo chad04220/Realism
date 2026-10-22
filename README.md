@@ -128,10 +128,11 @@ The concrete pad north of the shed holds a build jig, with an orbit camera aroun
 
 The whole world is saved: every voxel's material, temperature, damage and burn state, every loose body and its motion, the parts and their charge, the water, the air (temperature, smoke, steam and flow), the player, the tools, salvaged parts and the build on the workshop jig.
 
-- **F5** quicksaves and **F9** quickloads; both are also in the pause menu.
-- The game autosaves every 5 minutes and when you quit. **Continue** on the title screen picks up the latest autosave. The previous autosave is kept, and if the newest is damaged the game loads the one before it.
+- **F5** quicksaves and **F9** quickloads.
+- **Save / load game** in the pause menu (and **Load game** on the title screen) lists every save with its date, how long the world had been running and its size. Type a name to save under it; overwriting and deleting ask for a second click.
+- The game autosaves every 5 minutes (the file is written in the background, so play only pauses for the moment it takes to snapshot the world) and when you quit. **Continue** on the title screen picks up the latest autosave. The previous autosave is kept, and if the newest is damaged the game loads the one before it.
 - Saves live in `saves/` under the user data folder (`%APPDATA%\Realism\saves` on Windows). A default-world save is about 9–11 MB.
-- Files are written to a temporary name and then renamed, so a crash mid-save can't damage an existing save. Each file carries a checksum: a damaged, truncated or newer-format save is refused with a message, and the world you're in is left alone.
+- Files are written to a temporary name, flushed to disk and then renamed, so a crash or power cut mid-save can't damage an existing save. Each file carries a checksum: a damaged, truncated or newer-format save is refused with a message, and the world you're in is left alone.
 
 ## Smooth voxels
 
@@ -219,6 +220,7 @@ works over SSH and in CI. It builds the world and checks that:
 - external forces (thrust, drag) are integrated once per frame rather than once per physics substep;
 - saving and loading reproduces the world, bodies, parts, air and player exactly (compared by a state hash), and the loaded world keeps simulating;
 - corrupt, truncated, newer-format and missing saves are refused without touching the live world, and a damaged autosave falls back to the previous one;
+- killing the game in the middle of writing a save (12 times, at different moments) never damages the save already there (Linux/macOS);
 - re-initialising the simulation clears the clock, bodies, effects, radiators, flow fields and statistics.
 
 Exit status is 0 when every check passes and 2 when one fails. `--help` lists
@@ -227,7 +229,9 @@ all options. A headless CMake build also registers the self-test with CTest:
 ctest --test-dir build-headless --output-on-failure
 ```
 The `.github/workflows/build.yml` workflow builds the headless target on Linux,
-runs this self-test, and compiles the Windows build.
+runs this self-test, and compiles the Windows build. Each run's Windows build
+(`Realism.exe` with `settings.cfg`) can be downloaded from the run's
+**Artifacts** section on GitHub for 30 days.
 
 ## Project state and next steps
 

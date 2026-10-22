@@ -2,9 +2,15 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <fstream>
 #include <filesystem>
 #include <iterator>
+#ifndef _WIN32
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 #include "game.h"
 #include "../sim/save.h"
 #include "workshop.h"
@@ -311,6 +317,7 @@ void Game::drawHelp() {
 void Game::drawMenu() {
   float s = scale();
   float W = (float)width(), H = (float)height();
+  if (menuPage_ == "saves") { drawSavesPage(); return; }
   if (menuPage_ == "main") {
     // Pause: the same left-hand column as the title screen.
     rect(0, 0, W, H, Color(0.02f, 0.03f, 0.05f, 0.25f));
@@ -325,9 +332,7 @@ void Game::drawMenu() {
     yy += bh + 10 * s;
     if (button("Controls", x, yy, bw, bh)) { help_ = true; menu_ = false; }
     yy += bh + 10 * s;
-    if (button("Save game  (F5)", x, yy, bw, bh)) { menu_ = false; quickSave(); }
-    yy += bh + 10 * s;
-    if (button("Load game  (F9)", x, yy, bw, bh, false, saveExists("quicksave"))) quickLoad();
+    if (button("Save / load game", x, yy, bw, bh)) { menuPage_ = "saves"; saveListTime_ = -1; confirm_.clear(); }
     yy += bh + 10 * s;
     if (button("Reset world", x, yy, bw, bh)) { menu_ = false; resetWorld(); }
     yy += bh + 10 * s;
@@ -766,11 +771,51 @@ bool Game::selftest() {
     check(corruptRejected && truncRejected && futureRejected && missingRejected,
           "corrupt, truncated, future and missing saves are refused without touching the world");
 
+#ifndef _WIN32
+    // Killing the game mid-save (kill -9, a crash, a power button) must never
+    // cost the player the save they already had: the old file stays in place
+    // until the new one is complete. A child process writes the slot over and
+    // over and is killed at a different moment each time.
+    {
+      saveGame("killtest", &err);
+      std::string header;
+      std::vector<uint8_t> payload;
+      bool readable = save::readFile(savePath("killtest"), header, payload, err);
+      int survived = 0, tries = 12, midWrite = 0;
+      for (int k = 0; k < tries && readable; k++) {
+        fflush(stderr);
+        pid_t pid = fork();
+        if (pid == 0) {
+          std::string e;
+          for (;;) save::writeFile(savePath("killtest"), header, payload, e);
+        }
+        usleep(3000 + k * 4500);
+        kill(pid, SIGKILL);
+        waitpid(pid, nullptr, 0);
+        std::error_code tec;
+        std::string tmp = savePath("killtest") + ".tmp";
+        if (std::filesystem::exists(tmp, tec) && std::filesystem::file_size(tmp, tec) < 8 + header.size() + payload.size()) midWrite++;
+        std::filesystem::remove(tmp, tec);
+        std::string h2;
+        std::vector<uint8_t> p2;
+        if (save::readFile(savePath("killtest"), h2, p2, err) && p2 == payload) survived++;
+        else fprintf(stderr, "  killed writer %d: %s\n", k, err.c_str());
+      }
+      fprintf(stderr, "  killed the writer %d times (%d with a half-written file): %d left a loadable save\n", tries, midWrite,
+              survived);
+      check(readable && survived == tries && midWrite > 0, "killing the game mid-save never damages the existing save");
+    }
+#endif
     // Autosave keeps the previous file; a corrupt newest autosave falls back to it.
     std::error_code ec;
     std::filesystem::remove(savePath("autosave"), ec);
     std::filesystem::remove(savePath("autosave.1"), ec);
-    bool a1 = autosave();
+    double tA = plat::now();
+    bool a1 = autosave(true);  // the in-game path: encode now, write on a thread
+    double tBlock = plat::now() - tA;
+    finishPendingSave();
+    a1 = a1 && saveExists("autosave");
+    fprintf(stderr, "  background autosave blocked the game for %.0f ms\n", tBlock * 1000);
     const uint64_t hA = save::stateHash(sim);
     for (int i = 0; i < 10; i++) sim.step(1.f / 60.f);
     bool a2 = autosave();
@@ -920,6 +965,10 @@ void Game::drawTitle() {
   by += bh + 12 * s;
   if (button("Assembly workshop", x, by, bw, bh)) { title_ = false; mode_ = M_WORKSHOP; workshop->enter(); audio.playUi(SFX_UI); }
   by += bh + 12 * s;
+  if (!listSaves().empty()) {
+    if (button("Load game", x, by, bw, bh)) { menu_ = true; menuPage_ = "saves"; saveListTime_ = -1; confirm_.clear(); }
+    by += bh + 12 * s;
+  }
   if (button("Settings", x, by, bw, bh)) { menu_ = true; menuPage_ = "settings"; }
   by += bh + 12 * s;
   if (button("Quit", x, by, bw, bh)) quit_ = true;
@@ -929,4 +978,116 @@ void Game::drawTitle() {
            sim.world.countSolid() / 1000000, sim.stats.burning, length(sim.air.wind) * (1 + sim.air.gust));
   text(x, H - 46 * s, b, 13 * s, theme::faint);
   text(W - 28 * s, H - 46 * s, "F11 fullscreen", 13 * s, theme::faint, 2);
+}
+
+// ------------------------------------------------------------- saved games
+
+void Game::typeSaveName(plat::Input& in) {
+  if (!typingSave_) return;
+  for (char c : in.text) {
+    std::string t = saveName_ + c;
+    if (saveName_.size() < 40 && (unsigned char)c >= 0x20 && (validSlot(t) || c == ' ' || c == '.')) saveName_ = t;
+  }
+  in.text.clear();
+  if (in.pressed[key::Backspace] && !saveName_.empty()) {
+    saveName_.pop_back();
+    while (!saveName_.empty() && ((unsigned char)saveName_.back() & 0xC0) == 0x80) saveName_.pop_back();  // whole UTF-8 char
+  }
+  if (in.pressed[key::Enter]) typingSave_ = false;
+}
+
+void Game::drawSavesPage() {
+  float s = scale();
+  float W = (float)width(), H = (float)height();
+  if (saveListTime_ < 0 || plat::now() - saveListTime_ > 1.0) { saveList_ = listSaves(); saveListTime_ = plat::now(); }
+  rect(0, 0, W, H, Color(0.02f, 0.03f, 0.05f, 0.45f));
+  float w = 720 * s, h = std::min(H - 60 * s, 640 * s), x = W * 0.5f - w * 0.5f, y = H * 0.5f - h * 0.5f;
+  shadow(x, y, w, h, 20 * s, 34 * s, 0.55f);
+  glass(x, y, w, h, theme::panelHi, theme::line, 20 * s);
+  text(x + 36 * s, y + 28 * s, "Saved games", 28 * s, theme::text, 0, 0.06f);
+  const float bx = x + 36 * s, bw = w - 72 * s;
+  float yy = y + 82 * s;
+  auto fmtWhen = [](long long t) {
+    if (t <= 0) return std::string("unknown date");
+    std::time_t tt = (std::time_t)t;
+    char b[64];
+    std::strftime(b, sizeof b, "%Y-%m-%d %H:%M", std::localtime(&tt));
+    return std::string(b);
+  };
+  // Save the current world under a name (not from the title screen: there is
+  // no game in progress to save there).
+  if (!title_) {
+    float fw = bw - 140 * s;
+    bool hvName = hover(bx, yy, fw, 44 * s);
+    if (hvName) claimMouse();
+    if (hvName && mouse().released) typingSave_ = true;
+    else if (mouse().released && !hvName) typingSave_ = false;
+    rectBorder(bx, yy, fw, 44 * s, Color(0, 0, 0, 0.25f), typingSave_ ? theme::accent : theme::line, 8 * s);
+    std::string nm = saveName_ + (typingSave_ && std::fmod(plat::now(), 1.0) < 0.5 ? "|" : "");
+    text(bx + 14 * s, yy + 12 * s, nm.empty() ? std::string("Name this save") : nm, 15 * s, typingSave_ ? theme::text : theme::dim);
+    bool exists = false;
+    for (auto& si : saveList_) if (si.slot == saveName_) exists = true;
+    bool armed = confirm_ == "over:" + saveName_;
+    const char* label = exists ? (armed ? "Overwrite" : "Save") : "Save";
+    if (button(label, bx + fw + 12 * s, yy, 128 * s, 44 * s, true, validSlot(saveName_))) {
+      if (exists && !armed) confirm_ = "over:" + saveName_;
+      else {
+        std::string err;
+        typingSave_ = false;
+        confirm_.clear();
+        if (saveGame(saveName_, &err)) { toast("Saved \"" + saveName_ + "\"", theme::good, I_SAVE); menu_ = false; }
+        else toast("Save failed: " + err, theme::danger, I_SAVE);
+        saveListTime_ = -1;
+      }
+    }
+    yy += 52 * s;
+    if (exists) text(bx, yy, armed ? "A save with this name exists \xE2\x80\x94 click Overwrite to replace it." : "A save with this name exists.", 13 * s, armed ? theme::warm : theme::faint);
+    else if (!validSlot(saveName_) && !saveName_.empty()) text(bx, yy, "Names can't start or end with a space or a dot.", 13 * s, theme::faint);
+    yy += 30 * s;
+  }
+  line(bx, yy, bx + bw, yy, 1, theme::line);
+  yy += 12 * s;
+  // The list.
+  const float rowH = 62 * s, listTop = yy, listH = y + h - 80 * s - listTop;
+  if (saveList_.empty()) text(bx, yy + 10 * s, "No saves yet. F5 quicksaves at any time.", 15 * s, theme::dim);
+  float contentH = saveList_.size() * rowH;
+  if (hover(bx, listTop, bw, listH)) saveScroll_ -= mouse().wheel * rowH;
+  saveScroll_ = std::clamp(saveScroll_, 0.f, std::max(0.f, contentH - listH));
+  pushClip(bx, listTop, bw, listH);
+  std::string loadSlot, delSlot;
+  for (size_t i = 0; i < saveList_.size(); i++) {
+    const SaveInfo& si = saveList_[i];
+    float ry = listTop + i * rowH - saveScroll_;
+    if (ry + rowH < listTop || ry > listTop + listH) continue;
+    bool rowHover = hover(bx, ry, bw, rowH - 6 * s) && mouse().y >= listTop && mouse().y <= listTop + listH;
+    rect(bx, ry, bw, rowH - 6 * s, rowHover ? Color(1, 1, 1, 0.06f) : Color(0, 0, 0, 0.12f), 10 * s);
+    std::string title = si.slot == "quicksave" ? "Quicksave" : si.slot == "autosave" ? "Autosave" :
+                        si.slot == "autosave.1" ? "Previous autosave" : si.slot;
+    text(bx + 16 * s, ry + 9 * s, title, 16 * s, theme::text);
+    char sub[160];
+    int mins = (int)(si.simTime / 60), secs = (int)si.simTime % 60;
+    snprintf(sub, sizeof sub, "%s  \xC2\xB7  %d:%02d in the world  \xC2\xB7  %.1f MB", fmtWhen(si.savedUnix).c_str(), mins, secs,
+             si.bytes / 1048576.0);
+    text(bx + 16 * s, ry + 33 * s, sub, 12.5f * s, theme::faint);
+    bool armed = confirm_ == "del:" + si.slot;
+    if (button(armed ? "Delete?" : "Delete", bx + bw - 236 * s, ry + 9 * s, 104 * s, 38 * s)) {
+      if (armed) delSlot = si.slot; else confirm_ = "del:" + si.slot;
+    }
+    if (button("Load", bx + bw - 120 * s, ry + 9 * s, 104 * s, 38 * s, true)) loadSlot = si.slot;
+  }
+  popClip();
+  if (!delSlot.empty()) { deleteSave(delSlot); confirm_.clear(); saveListTime_ = -1; }
+  if (!loadSlot.empty()) {
+    std::string err;
+    confirm_.clear();
+    typingSave_ = false;
+    if (loadGame(loadSlot, &err)) toast("Loaded \"" + loadSlot + "\"", theme::accent, I_SAVE);
+    else toast("Couldn't load \"" + loadSlot + "\": " + err, theme::danger, I_SAVE);
+  }
+  if (button("Back", bx, y + h - 64 * s, 140 * s, 42 * s)) {
+    typingSave_ = false;
+    confirm_.clear();
+    if (title_) menu_ = false; else menuPage_ = "main";
+  }
+  text(bx + bw, y + h - 52 * s, "F5 quicksave  \xC2\xB7  F9 quickload", 13 * s, theme::faint, 2);
 }

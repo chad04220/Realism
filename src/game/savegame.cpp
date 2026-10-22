@@ -1,8 +1,11 @@
 // Saved games: the simulation (sim/save.cpp) plus what only the game knows:
 // the player, the tools, salvaged parts, collected material, armed charges,
 // open valves and which body is the workshop jig.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include "../sim/save.h"
@@ -64,12 +67,68 @@ bool Game::saveExists(const std::string& slot) {
   return fs::exists(savePath(slot), ec);
 }
 
-bool Game::saveGame(const std::string& slot, std::string* errOut) {
+bool Game::validSlot(const std::string& slot) {
+  if (slot.empty() || slot.size() > 48 || slot.find("..") != std::string::npos || slot.front() == ' ' || slot.back() == ' ' ||
+      slot.back() == '.')
+    return false;
+  for (unsigned char c : slot)
+    if (c < 0x20 || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|')
+      return false;
+  return true;
+}
+
+std::vector<Game::SaveInfo> Game::listSaves() {
+  std::vector<SaveInfo> out;
+  std::error_code ec;
+  fs::path dir = fs::path(savePath("x")).parent_path();
+  for (auto& e : fs::directory_iterator(dir, ec)) {
+    if (e.path().extension() != ".rsav") continue;
+    SaveInfo si;
+    si.slot = e.path().stem().string();
+    si.bytes = e.file_size(ec);
+    std::string header;
+    if (save::readHeader(e.path().string(), header)) {
+      auto num = [&](const char* key) {
+        size_t k = header.find(std::string("\"") + key + "\":");
+        return k == std::string::npos ? 0.0 : std::atof(header.c_str() + k + strlen(key) + 3);
+      };
+      si.savedUnix = (long long)num("saved_unix");
+      si.simTime = (float)num("sim_time_s");
+    }
+    out.push_back(si);
+  }
+  std::sort(out.begin(), out.end(), [](const SaveInfo& a, const SaveInfo& b) { return a.savedUnix > b.savedUnix; });
+  return out;
+}
+
+bool Game::deleteSave(const std::string& slot) {
+  if (!validSlot(slot)) return false;
+  std::error_code ec;
+  return fs::remove(savePath(slot), ec);
+}
+
+void Game::finishPendingSave() {
+  if (saveThread_.joinable()) saveThread_.join();
+  int st = saveState_.exchange(0);
+  if (st == 3) fprintf(stderr, "realism: background save failed: %s\n", saveErr_.c_str());
+}
+
+void Game::pollPendingSave() {
+  int st = saveState_.load();
+  if (st < 2) return;
+  if (saveThread_.joinable()) saveThread_.join();
+  saveState_ = 0;
+  if (st == 2) toast("Autosaved", ui::theme::faint, ui::I_SAVE);
+  else toast("Autosave failed: " + saveErr_, ui::theme::danger, ui::I_SAVE);
+}
+
+bool Game::saveGame(const std::string& slot, std::string* errOut, bool background, bool rotate) {
   std::string err;
-  if (slot.empty() || slot.find_first_of("/\\") != std::string::npos || slot.find("..") != std::string::npos) {
+  if (!validSlot(slot)) {
     if (errOut) *errOut = "invalid save name";
     return false;
   }
+  finishPendingSave();  // one write at a time
   save::Writer w;
   save::writeSim(w, sim);
 
@@ -110,7 +169,28 @@ bool Game::saveGame(const std::string& slot, std::string* errOut) {
            "\"voxel_size\":%.4f,\"world_m\":[%.2f,%.2f,%.2f],\"sim_time_s\":%.2f,\"bodies\":%zu,\"voxels\":%zu}",
            REALISM_VERSION, save::FORMAT, (long long)std::time(nullptr), jsonEscape(slot).c_str(), sim.cfg.voxelSize,
            sim.cfg.extent.x, sim.cfg.extent.y, sim.cfg.extent.z, sim.time, bodies, sim.world.countSolid());
-  bool ok = save::writeFile(savePath(slot), header, w.buf, err);
+  // Encoding needs the live world; checksumming and writing don't, so an
+  // autosave hands those to a thread and play carries on.
+  const std::string path = savePath(slot), prev = savePath(slot + ".1");
+  auto write = [path, prev, rotate](const std::string& hdr, const std::vector<uint8_t>& payload, std::string& e) {
+    std::error_code ec;
+    // Keep the previous file until the new one is safely in place, so a crash
+    // or a corrupt write still leaves something to fall back to.
+    if (rotate && fs::exists(path, ec)) fs::copy_file(path, prev, fs::copy_options::overwrite_existing, ec);
+    return save::writeFile(path, hdr, payload, e);
+  };
+  if (background) {
+    saveState_ = 1;
+    saveThread_ = std::thread([this, write, hdr = std::string(header), payload = std::move(w.buf)]() {
+      std::string e;
+      bool ok = write(hdr, payload, e);
+      saveErr_ = e;
+      saveState_ = ok ? 2 : 3;
+    });
+    if (errOut) errOut->clear();
+    return true;
+  }
+  bool ok = write(header, w.buf, err);
   if (!ok) fprintf(stderr, "realism: save failed: %s\n", err.c_str());
   if (errOut) *errOut = err;
   return ok;
@@ -124,8 +204,8 @@ bool Game::loadGame(const std::string& slot, std::string* errOut) {
     if (errOut) *errOut = e;
     return false;
   };
-  if (slot.empty() || slot.find_first_of("/\\") != std::string::npos || slot.find("..") != std::string::npos)
-    return fail("invalid save name");
+  if (!validSlot(slot)) return fail("invalid save name");
+  finishPendingSave();  // never read a file that is still being written
   // Checksum, magic and format are verified before the live world is touched.
   if (!save::readFile(savePath(slot), header, payload, err)) return fail(err);
 
@@ -183,6 +263,7 @@ bool Game::loadGame(const std::string& slot, std::string* errOut) {
     }
     return fail(err);
   }
+  toasts_.clear();  // they described a timeline that no longer exists
 
   // Everything parsed: install the game state.
   initParts(sim.vs);
@@ -223,14 +304,9 @@ bool Game::loadGame(const std::string& slot, std::string* errOut) {
   return true;
 }
 
-bool Game::autosave() {
-  // Keep the previous autosave until the new one is safely in place, so a
-  // crash or a corrupt write still leaves something to fall back to.
-  std::error_code ec;
-  std::string cur = savePath("autosave"), prev = savePath("autosave.1");
-  if (fs::exists(cur, ec)) fs::copy_file(cur, prev, fs::copy_options::overwrite_existing, ec);
+bool Game::autosave(bool background) {
   std::string err;
-  bool ok = saveGame("autosave", &err);
+  bool ok = saveGame("autosave", &err, background, true);
   autosaveTimer_ = 0;
   return ok;
 }

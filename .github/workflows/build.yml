@@ -26,3 +26,14 @@ jobs:
         run: cmake -B build -A x64
       - name: Build
         run: cmake --build build --config Release --parallel
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build/Release/Realism.exe, settings.cfg, README.md, THIRD_PARTY_NOTICES.md dist/
+      - name: Upload the Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Realism-windows-${{ github.sha }}
+          path: dist/
+          retention-days: 30

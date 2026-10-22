@@ -380,10 +380,15 @@ autosave fallback.
   live world is touched. readSim validates settings, materials and parts
   before calling `Sim::init`; if it fails after that, the game rebuilds the
   default world and shows the error. Every count is bounded by the bytes left.
-- **Slots:** `<userData>/saves/<slot>.rsav`. `quicksave` (F5/F9, pause
-  menu), `autosave` every 5 min and on quit, with the previous one copied to
-  `autosave.1` first; *Continue* on the title loads the newest readable one.
-  Script commands `save name` / `load name`.
+- **Slots:** `<userData>/saves/<slot>.rsav`, named by the player in the
+  saved-games page (pause menu, title screen), plus `quicksave` (F5/F9) and
+  `autosave` every 5 min (background thread) and on quit, with the previous
+  one copied to `autosave.1` first; *Continue* on the title loads the newest
+  readable one. Script commands `save name` / `load name`. The self-test uses
+  its own folder (`Game::saveDir`) so it never touches a player's saves.
+- **Durability:** temp file → fsync (`_commit` on Windows) → rename. The
+  self-test forks a writer and SIGKILLs it mid-save 12 times; the existing
+  save must survive every time.
 - **Changing the format:** append new data in a new tagged section or bump
   `save::FORMAT` and keep a reader for the old one. Never reuse a tag with a
   different layout.
@@ -420,7 +425,7 @@ autosave fallback.
 
 | # | Gap | Impact |
 |---|---|---|
-| P1 | ~~No save/load~~ — v1 done (§6.1); no save browser or named slots in the UI yet | Players can quit and continue; only one manual slot (quicksave) plus autosaves |
+| P1 | ~~No save/load~~ — done (§6.1): quicksave, named saves with a browser, autosave | No save thumbnails yet |
 | P2 | No tutorial, goals or progression | A new player bounces off the sandbox; the title screen explains nothing |
 | P3 | Audio is silent outside Windows | Linux/macOS builds have no sound; the mixer/backend is not abstracted |
 | P4 | Player walks through bodies | Grabbing/standing on machines is impossible; breaks the physical fantasy |
@@ -462,8 +467,10 @@ autosave fallback.
   the supported sizes.
 - **Memory:** one `Brick` per touched 16³ region. The 0.02 m world is 698 MB.
   Fine for desktop, hostile to 8 GB machines and future 1 cm worlds.
-- **Save performance:** saving runs on the game thread (~0.2–0.4 s hitch
-  every 5 minutes). Snapshot-then-encode on a worker thread would hide it.
+- **Save performance:** the world's bricks are encoded across all threads
+  and autosaves are checksummed and written on a background thread; the game
+  blocks ~60 ms (2 vCPU VM, 0.025 m) while the world is snapshotted. Manual
+  saves and loads are synchronous (~0.15 s / ~0.25 s).
 - **Bugs found but not fixed:** `Sim::settleBody` silently drops voxels if no
   free cell is found in 3 cells above; `spawnDebris` silently drops water/ash at
   the 30k cap; `T_FREEZE` is ignored for body-owned molten cells; blueprint
@@ -484,11 +491,13 @@ known crash on the shipped scene; documented supported range.
 
 ### M1 — Make it a game you can leave and come back to (blocker)
 
-1. ~~**Save/load v1** (L)~~ — done, see §6.1. Remaining: a save browser with
-   named slots and thumbnails (the JSON header is there for it).
-2. **Autosave and crash recovery** (M) — autosave every 5 min and on quit,
-   previous slot kept, fallback on corruption: done. Remaining: autosave from
-   a crash handler (needs S24), and a kill -9 soak of the temp+rename path.
+1. ~~**Save/load v1** (L)~~ — done, see §6.1, with a save browser (named
+   slots, date, world time, size, overwrite/delete confirmation). Remaining:
+   thumbnails.
+2. ~~**Autosave and crash recovery** (M)~~ — autosave every 5 min (written on
+   a thread) and on quit, previous slot kept, fallback on corruption, fsync
+   before rename, kill -9 test in the self-test. Remaining: an emergency
+   autosave from a crash handler (needs S24).
 3. **Pause/menu correctness** (S): save/load pause the sim; settings apply live
    where possible; `settings.cfg` world size requires restart (document).
 4. **Player collision with bodies** (M): capsule vs body samples; standing on a
@@ -583,7 +592,7 @@ unless it is pure presentation.
 | ID | Pri | Size | Task | Files | Done when |
 |---|---|---|---|---|---|
 | S1 | ✅ | L | Save/load world+bodies+components+player | new `sim/save.cpp`, `game/game.cpp`, `sim/sim.h` | Byte-identical world hash after round-trip; corrupt file rejected; self-test |
-| S2 | P0 (mostly done) | M | Atomic autosave + recovery slot | `game/game.cpp` | Kill -9 during save leaves a loadable previous slot |
+| S2 | ✅ | M | Atomic autosave + recovery slot | `game/game.cpp` | Kill -9 during save leaves a loadable previous slot |
 | S3 | P0 | M | Player capsule vs body collision | `game/game.cpp` | Player stands on a crate and cannot walk through a rover |
 | S4 | P0 | L | Cross-body electrical nets | `sim/electric.cpp` | Detached bulb and battery still light when wired across a seam |
 | S5 | P0 | M | Deterministic seed/replay | `sim/sim.*`, `core/math.h` | Two runs with same seed/inputs produce equal state hash |

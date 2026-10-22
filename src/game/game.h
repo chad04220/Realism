@@ -1,8 +1,10 @@
 #pragma once
+#include <atomic>
 #include <deque>
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 #include "../gfx/renderer.h"
 #include "../platform/platform.h"
@@ -56,9 +58,20 @@ class Game {
   // Saved games (savegame.cpp). Slots are file names under <user data>/saves.
   // saveGame never touches the live world; loadGame leaves it untouched if the
   // file is unreadable and rebuilds the default world if it fails part-way.
-  bool saveGame(const std::string& slot, std::string* err = nullptr);
+  // background: encode now, write on a thread (pollPendingSave reports it).
+  // rotate: copy the existing file to "<slot>.1" before replacing it.
+  bool saveGame(const std::string& slot, std::string* err = nullptr, bool background = false, bool rotate = false);
   bool loadGame(const std::string& slot, std::string* err = nullptr);
-  bool autosave();                       // rotates autosave -> autosave.1 first
+  bool autosave(bool background = false);  // keeps the previous one as autosave.1
+  static bool validSlot(const std::string& slot);
+  struct SaveInfo {
+    std::string slot;
+    long long savedUnix = 0;   // from the file's JSON header
+    float simTime = 0;
+    uintmax_t bytes = 0;
+  };
+  static std::vector<SaveInfo> listSaves();  // newest first
+  static bool deleteSave(const std::string& slot);
   bool loadNewestAutosave(std::string* err = nullptr);
   static std::string savePath(const std::string& slot);
   static std::string saveDir;            // empty = <user data>/saves (the self-test uses its own)
@@ -156,6 +169,20 @@ class Game {
   float time_ = 0;
   bool quit_ = false;
   float autosaveTimer_ = 0;
+  // Saved-games page.
+  std::string saveName_ = "My world";
+  bool typingSave_ = false;
+  std::string confirm_;                  // "del:<slot>" / "over:<slot>" awaiting a second click
+  std::vector<SaveInfo> saveList_;
+  double saveListTime_ = -1;
+  float saveScroll_ = 0;
+  void drawSavesPage();
+  void typeSaveName(plat::Input& in);
+  std::thread saveThread_;               // background autosave write
+  std::atomic<int> saveState_{0};        // 0 idle, 1 writing, 2 done, 3 failed
+  std::string saveErr_;
+  void finishPendingSave();              // wait for a background write
+  void pollPendingSave();                // report a finished one
   bool played_ = false;                   // left the title screen: worth an autosave on quit
   static constexpr float AUTOSAVE_SECONDS = 300;
   bool scripted_ = false;
