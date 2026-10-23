@@ -17,7 +17,10 @@ void Sim::init(const SimSettings& s) {
   worldHot.reset(world.bricks.size());
   bodies.clear();
   debris.clear();
-  fx.clear();
+  gas.reset(world);
+  debrisEscaped = 0;
+  flashes.clear();
+  fireSpots.clear();
   fluidActive.clear();
   supportSeeds.clear();
   worldSpecials.clear();
@@ -33,7 +36,7 @@ void Sim::init(const SimSettings& s) {
   time = 0;
   timeScale = 1;
   stats = {};
-  thermalAcc_ = fluidAcc_ = electricAcc_ = airAcc_ = 0;
+  thermalAcc_ = fluidAcc_ = electricAcc_ = airAcc_ = gasAcc_ = 0;
   lastSupportTime_ = -1;
   loadState_.clear();
   g_sim = this;
@@ -93,7 +96,14 @@ void Sim::step(float dtReal) {
   stats.physicsMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
 
   stepDebris(dt);
-  stepFx(dtReal);
+  stepFlashes(dtReal);
+  gasAcc_ += dt;
+  if (gasAcc_ >= 1.f / 30.f) {
+    auto a = clk::now();
+    gas.step(*this, std::min(gasAcc_, 0.1f));
+    stats.gasMs = std::chrono::duration<float, std::milli>(clk::now() - a).count();
+    gasAcc_ = 0;
+  }
 
   thermalAcc_ += dt;
   const float thermalTick = 1.f / 20.f;
@@ -525,19 +535,23 @@ void Sim::settleBody(int index) {
   b.vol.forEach([&](int x, int y, int z, Brick* br, int l) {
     vec3 p = b.toWorld(vec3(x + 0.5f, y + 0.5f, z + 0.5f), vs);
     ivec3 c = cellOf(p);
+    Cell cell;
+    cell.mat = br->mat[l]; cell.flags = br->flags[l]; cell.hp = br->hp[l]; cell.aux = br->aux[l];
+    cell.comp = br->comp[l]; cell.temp = br->temp[l]; cell.fuel = br->fuel[l];
     // Find the nearest free cell (the snap may collide with a neighbour).
-    for (int up = 0; up < 3; up++) {
+    bool done = false;
+    for (int up = 0; up < 3 && !done; up++) {
       ivec3 q(c.x, c.y + up, c.z);
       if (world.inb(q.x, q.y, q.z) && world.matI(q) == AIR) {
-        Cell cell;
-        cell.mat = br->mat[l]; cell.flags = br->flags[l]; cell.hp = br->hp[l]; cell.aux = br->aux[l];
-        cell.comp = br->comp[l]; cell.temp = br->temp[l]; cell.fuel = br->fuel[l];
         world.put(q.x, q.y, q.z, cell);
         worldChanged(q.x, q.y, q.z, AIR);
-        placed++;
-        break;
+        done = true;
       }
     }
+    // Further away if need be; failing that it stays loose as a fragment.
+    if (!done) done = depositVoxel(c, cell);
+    if (!done) spawnDebris(p, vec3(0), cell);
+    placed++;
   });
   removeBody(index);
 }
@@ -629,45 +643,29 @@ Hit Sim::raycast(const vec3& o, const vec3& d, float maxDist, int ignoreBody) co
 
 // ---------------------------------------------------------------- effects
 
-void Sim::emit(FxKind k, const vec3& p, const vec3& v, float life, float size, const vec3& color) {
-  if (fx.size() >= 24000) return;
-  Fx f;
-  f.p = p; f.v = v; f.life = f.maxLife = life; f.size = size; f.color = color; f.kind = k;
-  fx.push_back(f);
-}
-
 void Sim::spawnDebris(const vec3& p, const vec3& v, const Cell& c) {
   if (c.mat == AIR) return;
   if (debris.size() >= 30000) {
-    // Too much in flight: water goes straight to where it would land (it
-    // must never vanish); anything else turns to dust.
-    if (c.mat == WATER) placeWater(cellOf(p), c.temp);
-    else emit(FX_DUST, p, v * 0.3f, 1.2f, vs * 3, matLinear(c.mat));
-    return;
+    // Too much in flight: it goes straight to where it would land.
+    if (depositVoxel(cellOf(p), c)) return;
   }
   Debris d;
   d.p = p; d.v = v; d.mat = c.mat; d.temp = c.temp; d.life = 12; d.comp = c.comp; d.bounces = 0; d.aux = c.aux;
   debris.push_back(d);
 }
 
-void Sim::stepFx(float dt) {
-  for (size_t i = 0; i < fx.size();) {
-    Fx& f = fx[i];
-    f.life -= dt;
-    if (f.life <= 0) { f = fx.back(); fx.pop_back(); continue; }
-    // Effects ride the air: drag towards the local wind with a little lift of their own.
-    vec3 a = airReady ? air.velocity(f.p) : wind;
-    switch (f.kind) {
-      case FX_FIRE: f.v += (a - f.v) * std::min(1.f, 4.f * dt) + vec3(0, 3.0f, 0) * dt; f.size += dt * vs * 1.5f; break;
-      case FX_SMOKE: f.v += (a - f.v) * std::min(1.f, 2.5f * dt) + vec3(0, 0.25f, 0) * dt; f.size += dt * vs * 6; break;
-      case FX_STEAM: f.v += (a - f.v) * std::min(1.f, 3.f * dt) + vec3(0, 0.6f, 0) * dt; f.size += dt * vs * 8; break;
-      case FX_SPARK: f.v += gravity * dt + (a - f.v) * std::min(1.f, 0.3f * dt); break;
-      case FX_EMBER: f.v += gravity * dt * 0.12f + (a - f.v) * std::min(1.f, 1.5f * dt); break;
-      case FX_DUST: f.v += gravity * dt * 0.05f + (a - f.v) * std::min(1.f, 2.f * dt); f.size += dt * vs * 4; break;
-      case FX_SPRAY: f.v += gravity * dt + (a - f.v) * std::min(1.f, 0.5f * dt); break;
-      case FX_FLASH: f.size += dt * 8; break;
-    }
-    f.p += f.v * dt;
+void Sim::stepFlashes(float dt) {
+  for (size_t i = 0; i < flashes.size();) {
+    flashes[i].life -= dt;
+    if (flashes[i].life <= 0) { flashes[i] = flashes.back(); flashes.pop_back(); continue; }
     i++;
   }
+}
+
+size_t Sim::matterCount() const {
+  size_t n = 0;
+  auto vol = [&](const Volume& v) { for (auto& b : v.bricks) if (b) n += (size_t)b->count; };
+  vol(world);
+  for (auto& b : bodies) if (!b->ghost && !b->viewmodel) vol(b->vol);
+  return n + debris.size() + gas.count() + (size_t)gas.escaped + (size_t)debrisEscaped;
 }

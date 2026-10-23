@@ -21,8 +21,8 @@ namespace {
 std::string matDefines() {
   char buf[512];
   snprintf(buf, sizeof buf,
-           "#define MAT_WATER %du\n#define MAT_FILAMENT %du\n#define MAT_MOLTEN %du\n#define MAT_BEDROCK %du\n",
-           (int)WATER, (int)FILAMENT, (int)MOLTEN, (int)BEDROCK);
+           "#define MAT_WATER %du\n#define MAT_FILAMENT %du\n#define MAT_MOLTEN %du\n#define MAT_BEDROCK %du\n#define MAT_STEAM %du\n",
+           (int)WATER, (int)FILAMENT, (int)MOLTEN, (int)BEDROCK, (int)STEAM);
   return buf;
 }
 
@@ -52,11 +52,10 @@ GLuint makeTex2D(GLenum internal, int w, int h, GLenum format, GLenum type, bool
   return t;
 }
 
-inline uint8_t densOf(uint8_t m) {
+inline uint8_t opaqueOf(uint8_t m) {
   if (m == AIR) return 0;
   const Material& M = MATS[m];
-  if (M.transparent || M.phase == GAS) return 0;
-  return 255;
+  return M.transparent || M.phase == GAS ? 0 : 1;
 }
 inline uint8_t partHash(uint32_t c) { return c ? (uint8_t)(hash3((int)c, 17, 91) & 255) : 0; }
 }  // namespace
@@ -70,11 +69,9 @@ bool Renderer::init(Sim* sim) {
   ok &= worldShader_.build("world", shaders::kFullscreenVS, common + defs + "#define WORLD\n" + world + shaders::kVoxelFS);
   ok &= bodyShader_.build("body", common + shaders::kBoxVS, common + defs + world + shaders::kVoxelFS);
   ok &= debrisShader_.build("debris", common + shaders::kDebrisVS, common + shaders::kDebrisFS);
-  ok &= fxShader_.build("fx", common + shaders::kFxVS, common + shaders::kFxFS);
   ok &= brightShader_.build("bright", shaders::kFullscreenVS, common + shaders::kBrightFS);
   ok &= blurShader_.build("blur", shaders::kFullscreenVS, common + shaders::kBlurFS);
   ok &= compositeShader_.build("composite", shaders::kFullscreenVS, common + shaders::kCompositeFS);
-  ok &= volumeShader_.build("volume", shaders::kFullscreenVS, common + shaders::kVolumeFS);
   if (!ok) return false;
   // Precomputed sun visibility is an optimisation: without compute support
   // (or with REALISM_NO_SUNVIS) shadows fall back to a ray per pixel.
@@ -82,7 +79,6 @@ bool Renderer::init(Sim* sim) {
 
   const Volume& w = sim_->world;
   worldData_ = makeTex3D(GL_RGBA8UI, w.nx, w.ny, w.nz, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, false);
-  worldDens_ = makeTex3D(GL_R8, w.nx, w.ny, w.nz, GL_RED, GL_UNSIGNED_BYTE, true);
   worldBricks_ = makeTex3D(GL_R8UI, w.bx, w.by, w.bz, GL_RED_INTEGER, GL_UNSIGNED_BYTE, false);
   worldCells_ = makeTex3D(GL_R8UI, w.bx * 4, w.by * 4, w.bz * 4, GL_RED_INTEGER, GL_UNSIGNED_BYTE, false);
   vram_ += (size_t)w.bx * w.by * w.bz * 64;
@@ -97,7 +93,7 @@ bool Renderer::init(Sim* sim) {
     sunDirty_.assign(w.bricks.size(), 0);
     sunOccHash_.assign(w.bricks.size(), 0);
   }
-  vram_ += (size_t)w.nx * w.ny * w.nz * 5;
+  vram_ += (size_t)w.nx * w.ny * w.nz * 4;
   dynDims_ = {w.nx / dynScale_, w.ny / dynScale_, w.nz / dynScale_};
   dynOcc_ = makeTex3D(GL_R8, dynDims_.x, dynDims_.y, dynDims_.z, GL_RED, GL_UNSIGNED_BYTE, true);
   dynCpu_.assign((size_t)dynDims_.x * dynDims_.y * dynDims_.z, 0);
@@ -147,27 +143,10 @@ bool Renderer::init(Sim* sim) {
   glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 24, (void*)12);
   glGenBuffers(1, &vboDebrisInst_);
   glBindBuffer(GL_ARRAY_BUFFER, vboDebrisInst_);
-  for (int a = 0; a < 3; a++) {
+  for (int a = 0; a < 2; a++) {
     glEnableVertexAttribArray(2 + a);
-    glVertexAttribPointer(2 + a, 4, GL_FLOAT, GL_FALSE, 48, (void*)(intptr_t)(a * 16));
+    glVertexAttribPointer(2 + a, 4, GL_FLOAT, GL_FALSE, 32, (void*)(intptr_t)(a * 16));
     glVertexAttribDivisor(2 + a, 1);
-  }
-
-  // FX sprites.
-  const float quad[] = {-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1};
-  glGenVertexArrays(1, &vaoFx_);
-  glBindVertexArray(vaoFx_);
-  glGenBuffers(1, &vboFxQuad_);
-  glBindBuffer(GL_ARRAY_BUFFER, vboFxQuad_);
-  glBufferData(GL_ARRAY_BUFFER, sizeof quad, quad, GL_STATIC_DRAW);
-  glEnableVertexAttribArray(0);
-  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, (void*)0);
-  glGenBuffers(1, &vboFxInst_);
-  glBindBuffer(GL_ARRAY_BUFFER, vboFxInst_);
-  for (int a = 0; a < 3; a++) {
-    glEnableVertexAttribArray(1 + a);
-    glVertexAttribPointer(1 + a, 4, GL_FLOAT, GL_FALSE, 48, (void*)(intptr_t)(a * 16));
-    glVertexAttribDivisor(1 + a, 1);
   }
   glBindVertexArray(0);
   syncProfile_ = getenv("REALISM_PROFILE_SYNC") != nullptr;
@@ -187,7 +166,7 @@ double Renderer::meanSceneRed() {
 }
 
 const char* Renderer::passName(int p) {
-  static const char* n[P_COUNT] = {"upload", "world", "bodies", "particles", "smoke", "post"};
+  static const char* n[P_COUNT] = {"upload", "world", "bodies", "debris", "post"};
   return p >= 0 && p < P_COUNT ? n[p] : "?";
 }
 
@@ -231,7 +210,6 @@ void Renderer::ensureTargets(int w, int h) {
   rw_ = w; rh_ = h;
   if (fbo_) {
     glDeleteFramebuffers(1, &fbo_); glDeleteTextures(1, &colorTex_); glDeleteTextures(1, &depthTex_);
-    glDeleteFramebuffers(1, &depthCopyFbo_); glDeleteTextures(1, &depthCopyTex_);
     for (auto& l : bloomLevels_) { glDeleteFramebuffers(1, &l.fbo); glDeleteTextures(1, &l.tex); }
     bloomLevels_.clear();
   }
@@ -241,23 +219,6 @@ void Renderer::ensureTargets(int w, int h) {
   glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, colorTex_, 0);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthTex_, 0);
-  depthCopyTex_ = makeTex2D(GL_DEPTH_COMPONENT32F, w, h, GL_DEPTH_COMPONENT, GL_FLOAT, false);
-  glGenFramebuffers(1, &depthCopyFbo_);
-  glBindFramebuffer(GL_FRAMEBUFFER, depthCopyFbo_);
-  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthCopyTex_, 0);
-  // Half-resolution targets for smoke, steam and heat haze.
-  if (volFbo_) { glDeleteFramebuffers(1, &volFbo_); glDeleteTextures(1, &volTex_); glDeleteTextures(1, &hazeTex_); }
-  vw_ = std::max(16, w / 2); vh_ = std::max(16, h / 2);
-  volTex_ = makeTex2D(GL_RGBA16F, vw_, vh_, GL_RGBA, GL_FLOAT, true);
-  hazeTex_ = makeTex2D(GL_R16F, vw_, vh_, GL_RED, GL_FLOAT, true);
-  glGenFramebuffers(1, &volFbo_);
-  glBindFramebuffer(GL_FRAMEBUFFER, volFbo_);
-  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, volTex_, 0);
-  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, hazeTex_, 0);
-  {
-    const GLenum bufs[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
-    glDrawBuffers(2, bufs);
-  }
   int bw = w / 2, bh = h / 2;
   for (int i = 0; i < 6 && bw >= 4 && bh >= 4; i++) {
     Level l;
@@ -279,12 +240,14 @@ void Renderer::uploadWorldBrick(int b) {
   const Volume& w = sim_->world;
   int bx = b % w.bx, bz = (b / w.bx) % w.bz, by = b / (w.bx * w.bz);
   scratchData_.resize(BS3 * 4);
-  scratchDens_.resize(BS3);
+  scratchOpaque_.resize(BS3);
   scratchCells_.assign(64, 0);
   const Brick* br = w.brickAt(b);
-  if (!br || br->count == 0) {
+  const GasBrick* gb = sim_->gas.bricks.empty() ? nullptr : sim_->gas.bricks[b].get();
+  if (gb && !gb->count) gb = nullptr;
+  if ((!br || br->count == 0) && !gb) {
     std::fill(scratchData_.begin(), scratchData_.end(), 0);
-    std::fill(scratchDens_.begin(), scratchDens_.end(), 0);
+    std::fill(scratchOpaque_.begin(), scratchOpaque_.end(), 0);
     if (brickOcc_[b]) { brickOcc_[b] = 0; brickOccDirty_ = true; }
   } else {
     for (int z = 0; z < 16; z++)
@@ -292,27 +255,36 @@ void Renderer::uploadWorldBrick(int b) {
         for (int x = 0; x < 16; x++) {
           int l = x | (z << 4) | (y << 8);
           int o = x + 16 * (y + 16 * z);
-          uint8_t m = br->mat[l];
+          uint8_t m = br ? br->mat[l] : 0;
+          if (!m && gb && gb->mat[l]) {
+            // A gas voxel: drawn like any other voxel, glowing by its temperature.
+            m = gb->mat[l];
+            scratchData_[o * 4 + 0] = m;
+            scratchData_[o * 4 + 1] = glowByte(gb->temp[l], 0);
+            scratchData_[o * 4 + 2] = 255;
+            scratchData_[o * 4 + 3] = 0;
+            scratchOpaque_[o] = 0;
+            scratchCells_[(x >> 2) + 4 * ((y >> 2) + 4 * (z >> 2))] = 1;
+            continue;
+          }
           scratchData_[o * 4 + 0] = m;
           scratchData_[o * 4 + 1] = m ? glowByte(br->temp[l], br->flags[l]) : 0;
-          scratchData_[o * 4 + 2] = br->hp[l];
-          scratchData_[o * 4 + 3] = partHash(br->comp[l]);
-          scratchDens_[o] = densOf(m);
+          scratchData_[o * 4 + 2] = br ? br->hp[l] : 255;
+          scratchData_[o * 4 + 3] = br ? partHash(br->comp[l]) : 0;
+          scratchOpaque_[o] = opaqueOf(m);
           if (m) scratchCells_[(x >> 2) + 4 * ((y >> 2) + 4 * (z >> 2))] = 1;
         }
     if (!brickOcc_[b]) { brickOcc_[b] = 1; brickOccDirty_ = true; }
   }
   glBindTexture(GL_TEXTURE_3D, worldData_);
   glTexSubImage3D(GL_TEXTURE_3D, 0, bx * 16, by * 16, bz * 16, 16, 16, 16, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, scratchData_.data());
-  glBindTexture(GL_TEXTURE_3D, worldDens_);
-  glTexSubImage3D(GL_TEXTURE_3D, 0, bx * 16, by * 16, bz * 16, 16, 16, 16, GL_RED, GL_UNSIGNED_BYTE, scratchDens_.data());
   glBindTexture(GL_TEXTURE_3D, worldCells_);
   glTexSubImage3D(GL_TEXTURE_3D, 0, bx * 4, by * 4, bz * 4, 4, 4, 4, GL_RED_INTEGER, GL_UNSIGNED_BYTE, scratchCells_.data());
   // Most uploads are glow (a fire's temperatures); shadows only change when
   // what blocks light does. Compare a hash of the opaque voxels.
   if (sunVisOk_) {
     uint64_t h = 0xcbf29ce484222325ull;
-    for (int i = 0; i < BS3; i++) { h ^= scratchDens_[i]; h *= 0x100000001b3ull; }
+    for (int i = 0; i < BS3; i++) { h ^= scratchOpaque_[i]; h *= 0x100000001b3ull; }
     if (sunOccHash_[b] != h) { sunOccHash_[b] = h; markSunShadow(b); }
   }
 }
@@ -368,22 +340,19 @@ void Renderer::markAllSun() {
 void Renderer::processSun(size_t maxBricks) {
   if (!sunVisOk_) return;
   const Volume& w = sim_->world;
-  if (sunSmooth_ != (opt_.smooth ? 1 : 0) || length2(sunDirUsed_ - sim_->sunDir) > 1e-12f) {
-    // What counts as an occluder, or where the sun is, changed: all of it.
-    sunSmooth_ = opt_.smooth ? 1 : 0;
+  if (length2(sunDirUsed_ - sim_->sunDir) > 1e-12f) {
+    // The sun moved: all of it.
     sunDirUsed_ = sim_->sunDir;
     markAllSun();
   }
   if (sunQueue_.empty()) return;
   sunVisShader_.use();
   glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_3D, worldData_); sunVisShader_.set("uWorldData", 0);
-  glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_3D, worldDens_); sunVisShader_.set("uWorldDensity", 1);
   glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_3D, worldBricks_); sunVisShader_.set("uWorldBricks", 2);
   glActiveTexture(GL_TEXTURE0 + 6); glBindTexture(GL_TEXTURE_3D, worldCells_); sunVisShader_.set("uWorldCells", 6);
   glActiveTexture(GL_TEXTURE0);
   sunVisShader_.set("uWorldDims", ivec3(w.nx, w.ny, w.nz));
   sunVisShader_.set("uSunDir", sim_->sunDir);
-  sunVisShader_.set("uSmooth", sunSmooth_);
   sunVisShader_.set("uCellSkip", getenv("REALISM_NO_CELLS") ? 0 : 1);
   setMaterials(sunVisShader_);
   glBindImageTexture(0, sunVis_, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R8);
@@ -416,7 +385,6 @@ void Renderer::uploadAllWorld() {
   // The whole world's sunlight, before the first frame.
   if (brickOccDirty_) updateWorld();
   markAllSun();
-  sunSmooth_ = opt_.smooth ? 1 : 0;
   sunDirUsed_ = sim_->sunDir;
   processSun(sunQueue_.size());
 }
@@ -456,9 +424,8 @@ void Renderer::buildBodyTex(Body& b, BodyGpu& g) {
   size_t n = (size_t)td.x * td.y * td.z;
   auto alloc = [&](Tex3D& t) {
     if (t.data && t.dims == td) return;
-    if (t.data) { glDeleteTextures(1, &t.data); glDeleteTextures(1, &t.dens); }
+    if (t.data) glDeleteTextures(1, &t.data);
     t.data = makeTex3D(GL_RGBA8UI, td.x, td.y, td.z, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, false);
-    t.dens = makeTex3D(GL_R8, td.x, td.y, td.z, GL_RED, GL_UNSIGNED_BYTE, true);
     t.dims = td;
   };
   // Which components spin separately?
@@ -467,12 +434,11 @@ void Renderer::buildBodyTex(Body& b, BodyGpu& g) {
   // Free textures of parts that no longer exist.
   for (size_t i = 0; i < g.parts.size();) {
     if (std::find(rotIds.begin(), rotIds.end(), g.parts[i].first) == rotIds.end()) {
-      glDeleteTextures(1, &g.parts[i].second.data); glDeleteTextures(1, &g.parts[i].second.dens);
+      glDeleteTextures(1, &g.parts[i].second.data);
       g.parts.erase(g.parts.begin() + i);
     } else i++;
   }
   std::vector<std::vector<uint8_t>> data(1 + rotIds.size(), std::vector<uint8_t>(n * 4, 0));
-  std::vector<std::vector<uint8_t>> dens(1 + rotIds.size(), std::vector<uint8_t>(n, 0));
   std::vector<std::pair<uint32_t, vec3>> bulbSum;
   std::vector<int> bulbCount;
   v.forEach([&](int x, int y, int z, Brick* br, int l) {
@@ -485,7 +451,6 @@ void Renderer::buildBodyTex(Body& b, BodyGpu& g) {
     data[slot][o * 4 + 1] = glowByte(br->temp[l], br->flags[l]);
     data[slot][o * 4 + 2] = br->hp[l];
     data[slot][o * 4 + 3] = partHash(c);
-    dens[slot][o] = densOf(m);
     if (m == FILAMENT && c) {
       size_t k = 0;
       for (; k < bulbSum.size(); k++) if (bulbSum[k].first == c) break;
@@ -501,8 +466,6 @@ void Renderer::buildBodyTex(Body& b, BodyGpu& g) {
     alloc(t);
     glBindTexture(GL_TEXTURE_3D, t.data);
     glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, td.x, td.y, td.z, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, data[slot].data());
-    glBindTexture(GL_TEXTURE_3D, t.dens);
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, td.x, td.y, td.z, GL_RED, GL_UNSIGNED_BYTE, dens[slot].data());
   };
   upload(g.main, 0);
   for (size_t k = 0; k < rotIds.size(); k++) {
@@ -528,8 +491,8 @@ void Renderer::updateBodies() {
   for (auto it = bodies_.begin(); it != bodies_.end();) {
     if (!it->second.seen) {
       auto& g = it->second;
-      if (g.main.data) { glDeleteTextures(1, &g.main.data); glDeleteTextures(1, &g.main.dens); }
-      for (auto& p : g.parts) { glDeleteTextures(1, &p.second.data); glDeleteTextures(1, &p.second.dens); }
+      if (g.main.data) glDeleteTextures(1, &g.main.data);
+      for (auto& p : g.parts) glDeleteTextures(1, &p.second.data);
       it = bodies_.erase(it);
     } else ++it;
   }
@@ -570,21 +533,19 @@ void Renderer::gatherLights(std::vector<vec4>& pos, std::vector<vec4>& col) {
     for (auto& [c, local] : it->second.bulbs)
       if (comp(c).powered) add(bp->toWorld(local, sim_->vs), 6.f, vec3(5.5f, 4.4f, 2.8f) * comp(c).powerFactor);
   }
-  // Explosions.
-  for (auto& f : sim_->fx)
-    if (f.kind == FX_FLASH) add(f.p, 14.f, vec3(60, 40, 18) * (f.life / f.maxLife));
-  // Fires: a few representative flames spaced apart.
+  // Blast flashes (light, not matter).
+  for (auto& f : sim_->flashes) add(f.p, 14.f, vec3(60, 40, 18) * (f.life / f.maxLife));
+  // Fires: burning surfaces and glowing gas, a few representative spots spaced apart.
   std::vector<vec3> picked;
-  for (size_t i = 0; i < sim_->fx.size() && picked.size() < 6; i += 7) {
-    const Fx& f = sim_->fx[i];
-    if (f.kind != FX_FIRE) continue;
-    bool near = false;
-    for (auto& p : picked) if (length2(p - f.p) < 0.8f) { near = true; break; }
-    if (near) continue;
-    picked.push_back(f.p);
+  auto fire = [&](const vec3& p) {
+    if (picked.size() >= 6) return;
+    for (auto& q : picked) if (length2(q - p) < 0.8f) return;
+    picked.push_back(p);
     float flick = 0.8f + 0.4f * rng().f();
-    add(f.p, 4.f, vec3(4.0f, 1.9f, 0.6f) * flick);
-  }
+    add(p, 4.f, vec3(4.0f, 1.9f, 0.6f) * flick);
+  };
+  for (size_t i = 0; i < sim_->fireSpots.size(); i += 3) fire(sim_->fireSpots[i]);
+  for (size_t i = 0; i < sim_->gas.hot.size(); i += 2) fire(sim_->gas.hot[i]);
 }
 
 void Renderer::setCommon(Shader& s, const Camera& cam, float time) {
@@ -608,7 +569,7 @@ void Renderer::setMaterials(Shader& s) {
         vec3 c = matLinear((uint8_t)i);
         a[i * 4 + 0] = c.x; a[i * 4 + 1] = c.y; a[i * 4 + 2] = c.z; a[i * 4 + 3] = MATS[i].roughness;
         b[i * 4 + 0] = MATS[i].metal; b[i * 4 + 1] = (float)MATS[i].pattern;
-        b[i * 4 + 2] = MATS[i].transparent ? 1.f : 0.f; b[i * 4 + 3] = 0;
+        b[i * 4 + 2] = MATS[i].transparent ? 1.f : 0.f; b[i * 4 + 3] = MATS[i].phase == GAS && i != AIR ? 1.f : 0.f;
       }
     }
     built = true;
@@ -617,21 +578,24 @@ void Renderer::setMaterials(Shader& s) {
   glUniform4fv(s.loc("uMatB"), 64, b);
 }
 
+// The centre of the world voxel p is in: loose voxels and effects are drawn
+// on the grid, exactly where a voxel there would be.
+static vec3 snapToVoxel(const vec3& p, float vs) {
+  return vec3((std::floor(p.x / vs) + 0.5f) * vs, (std::floor(p.y / vs) + 0.5f) * vs, (std::floor(p.z / vs) + 0.5f) * vs);
+}
+
 void Renderer::drawDebris(const Camera& cam, float time) {
   auto& deb = sim_->debris;
   if (deb.empty()) return;
+  const float vs = sim_->vs;
   std::vector<float> inst;
-  inst.reserve(deb.size() * 12);
-  for (size_t i = 0; i < deb.size(); i++) {
-    const Debris& d = deb[i];
+  inst.reserve(deb.size() * 8);
+  for (const Debris& d : deb) {
     vec3 c = matLinear(d.mat);
     if (d.mat == MOLTEN) c = vec3(1.0f, 0.35f, 0.05f);
     float glow = d.temp > 430 ? std::min(63.f, (d.temp - 430) / 25.f + 1) : 0;
-    uint32_t h = hash3((int)i, 3, 7);
-    vec3 ax = normalize(vec3((h & 255) / 255.f - .5f, ((h >> 8) & 255) / 255.f - .5f, ((h >> 16) & 255) / 255.f - .5f));
-    quat q = quat::axisAngle(ax, time * (3 + (h % 7)) * (d.bounces < 3 ? 1.f : 0.f) + (h & 63));
-    float size = sim_->vs * (0.75f + 0.25f * ((h >> 24) & 15) / 15.f);
-    inst.insert(inst.end(), {d.p.x, d.p.y, d.p.z, size, c.x, c.y, c.z, glow, q.x, q.y, q.z, q.w});
+    vec3 p = snapToVoxel(d.p, vs);
+    inst.insert(inst.end(), {p.x, p.y, p.z, vs, c.x, c.y, c.z, glow});
   }
   debrisShader_.use();
   setCommon(debrisShader_, cam, time);
@@ -639,39 +603,6 @@ void Renderer::drawDebris(const Camera& cam, float time) {
   glBindBuffer(GL_ARRAY_BUFFER, vboDebrisInst_);
   glBufferData(GL_ARRAY_BUFFER, inst.size() * sizeof(float), inst.data(), GL_STREAM_DRAW);
   glDrawElementsInstanced(GL_TRIANGLES, 36, GL_UNSIGNED_SHORT, nullptr, (GLsizei)deb.size());
-}
-
-void Renderer::drawFx(const Camera& cam, float time) {
-  auto& fx = sim_->fx;
-  if (fx.empty()) return;
-  std::vector<float> inst;
-  inst.reserve(fx.size() * 12);
-  for (size_t i = 0; i < fx.size(); i++) {
-    const Fx& f = fx[i];
-    float age = 1.f - f.life / f.maxLife;
-    float stretch = (f.kind == FX_SPARK) ? std::min(3.f, length(f.v) * 0.15f) : 0.f;
-    inst.insert(inst.end(), {f.p.x, f.p.y, f.p.z, f.size, f.color.x, f.color.y, f.color.z, 1.f,
-                             (float)f.kind, age, (float)(i % 97) / 97.f, stretch});
-  }
-  fxShader_.use();
-  setCommon(fxShader_, cam, time);
-  fxShader_.set("uCamRight", cam.right);
-  fxShader_.set("uCamUp", cam.up);
-  fxShader_.set("uViewport", vec2((float)rw_, (float)rh_));
-  fxShader_.set("uNear", cam.nearZ);
-  fxShader_.set("uFar", cam.farZ);
-  glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, depthCopyTex_);
-  fxShader_.set("uDepth", 0);
-  glBindVertexArray(vaoFx_);
-  glBindBuffer(GL_ARRAY_BUFFER, vboFxInst_);
-  glBufferData(GL_ARRAY_BUFFER, inst.size() * sizeof(float), inst.data(), GL_STREAM_DRAW);
-  glEnable(GL_BLEND);
-  glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-  glDepthMask(GL_FALSE);
-  glDrawArraysInstanced(GL_TRIANGLES, 0, 6, (GLsizei)fx.size());
-  glDepthMask(GL_TRUE);
-  glDisable(GL_BLEND);
 }
 
 // The final image is composited off screen, shown with a blit, and a
@@ -717,45 +648,6 @@ void Renderer::buildBackdrop() {
     src = glassTex_[i]; srcW = gw_[i]; srcH = gh_[i];
   }
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
-void Renderer::uploadAir() {
-  const AirSim& a = sim_->air;
-  if (!sim_->airReady || a.T.empty()) return;
-  if (!airTex_) airTex_ = makeTex3D(GL_RGBA8, a.nx, a.ny, a.nz, GL_RGBA, GL_UNSIGNED_BYTE, true);
-  if (!a.texDirty) return;
-  // The air grid is stored x, z, y; the texture wants x, y, z.
-  airCpu_.resize((size_t)a.nx * a.ny * a.nz * 4);
-  for (int z = 0; z < a.nz; z++)
-    for (int y = 0; y < a.ny; y++)
-      for (int x = 0; x < a.nx; x++) {
-        int c = a.cid(x, y, z);
-        uint8_t* o = &airCpu_[((size_t)x + (size_t)a.nx * (y + (size_t)a.ny * z)) * 4];
-        o[0] = (uint8_t)(std::clamp(a.smk[c] * 0.5f, 0.f, 1.f) * 255);
-        o[1] = (uint8_t)(std::clamp(a.stm[c] * 0.5f, 0.f, 1.f) * 255);
-        o[2] = (uint8_t)(std::clamp((a.T[c] - AMBIENT) / 800.f, 0.f, 1.f) * 255);
-        o[3] = 255;
-      }
-  glBindTexture(GL_TEXTURE_3D, airTex_);
-  glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, a.nx, a.ny, a.nz, GL_RGBA, GL_UNSIGNED_BYTE, airCpu_.data());
-  sim_->air.texDirty = false;
-}
-
-void Renderer::drawVolumes(const Camera& cam, float time) {
-  if (!airTex_) return;
-  glBindFramebuffer(GL_FRAMEBUFFER, volFbo_);
-  glViewport(0, 0, vw_, vh_);
-  glDisable(GL_DEPTH_TEST);
-  glDisable(GL_BLEND);
-  volumeShader_.use();
-  setCommon(volumeShader_, cam, time);
-  glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_3D, airTex_); volumeShader_.set("uAir", 0);
-  glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, depthCopyTex_); volumeShader_.set("uDepth", 1);
-  const AirSim& a = sim_->air;
-  volumeShader_.set("uAirSize", vec3(a.nx * a.h, a.ny * a.h, a.nz * a.h));
-  glBindVertexArray(vaoEmpty_);
-  glDrawArrays(GL_TRIANGLES, 0, 3);
-  glActiveTexture(GL_TEXTURE0);
 }
 
 void Renderer::bloom() {
@@ -823,17 +715,15 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
 
   auto bindWorld = [&](Shader& s) {
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_3D, worldData_); s.set("uWorldData", 0);
-    glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_3D, worldDens_); s.set("uWorldDensity", 1);
     glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_3D, worldBricks_); s.set("uWorldBricks", 2);
     glActiveTexture(GL_TEXTURE0 + 3); glBindTexture(GL_TEXTURE_3D, dynOcc_); s.set("uDynOcc", 3);
     glActiveTexture(GL_TEXTURE0 + 6); glBindTexture(GL_TEXTURE_3D, worldCells_); s.set("uWorldCells", 6);
     static const int cellSkip = getenv("REALISM_NO_CELLS") ? 0 : 1;
     s.set("uCellSkip", cellSkip);
     glActiveTexture(GL_TEXTURE0 + 7); glBindTexture(GL_TEXTURE_3D, sunVis_); s.set("uSunVis", 7);
-    s.set("uSunVisOn", sunVisOk_ && sunSmooth_ == (opt.smooth ? 1 : 0) ? 1 : 0);
+    s.set("uSunVisOn", sunVisOk_ ? 1 : 0);
     s.set("uWorldDims", ivec3(sim_->world.nx, sim_->world.ny, sim_->world.nz));
     s.set("uDynScale", (float)dynScale_);
-    s.set("uSmooth", opt.smooth ? 1 : 0);
     s.set("uShadows", opt.shadows ? 1 : 0);
     s.set("uNumLights", (int)lpos.size());
     if (!lpos.empty()) {
@@ -846,7 +736,6 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
     s.set("uGroundY", groundY);
     s.set("uDebug", getenv("REALISM_DEBUG_PASS") ? atoi(getenv("REALISM_DEBUG_PASS")) : 0);
     s.set("uObjData", 4);
-    s.set("uObjDensity", 5);
   };
   auto setHover = [&](Shader& s, int which) {
     if (hover.body == which && hover.comp) {
@@ -897,7 +786,6 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
     mat4 model = mat4::trs(b.pos, b.rot, vec3(vs)) * mat4::trs(b.com * -1.f, quat(), vec3(1));
     auto drawTex = [&](const Tex3D& t, const mat4& M, const mat3& Rm) {
       glActiveTexture(GL_TEXTURE0 + 4); glBindTexture(GL_TEXTURE_3D, t.data);
-      glActiveTexture(GL_TEXTURE0 + 5); glBindTexture(GL_TEXTURE_3D, t.dens);
       bodyShader_.set("uObjDims", ivec3(b.vol.nx, b.vol.ny, b.vol.nz));
       bodyShader_.set("uModel", M);
       bodyShader_.set("uModelInv", M.inverse());
@@ -928,19 +816,9 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
   glDisable(GL_BLEND);
   glDisable(GL_CULL_FACE);
 
-  // ---- debris and effects
+  // ---- loose voxels in flight
   stamp(P_PARTICLES);
   drawDebris(cam, time);
-  glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_);
-  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, depthCopyFbo_);
-  glBlitFramebuffer(0, 0, rw, rh, 0, 0, rw, rh, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
-  glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
-  drawFx(cam, time);
-
-  // ---- smoke, steam and heat haze
-  stamp(P_VOLUMES);
-  bool vol = opt.volumetrics && sim_->airReady;
-  if (vol) { uploadAir(); drawVolumes(cam, time); }
 
   // ---- bloom + composite
   stamp(P_POST);
@@ -957,11 +835,7 @@ void Renderer::render(const Camera& cam, const RenderOptions& opt, const HoverIn
   compositeShader_.set("uBloom", 1);
   compositeShader_.set("uBloomStrength", opt.bloom ? 0.55f : 0.f);
   compositeShader_.set("uExposure", opt.exposure);
-  compositeShader_.set("uTexel", vec2(1.f / rw, 1.f / rh));
   compositeShader_.set("uFlash", flash);
-  compositeShader_.set("uVolOn", vol && airTex_ ? 1.f : 0.f);
-  glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_2D, volTex_); compositeShader_.set("uVol", 2);
-  glActiveTexture(GL_TEXTURE0 + 3); glBindTexture(GL_TEXTURE_2D, hazeTex_); compositeShader_.set("uHaze", 3);
   glBindVertexArray(vaoEmpty_);
   glDrawArrays(GL_TRIANGLES, 0, 3);
   // Show it, then blur a copy for the UI.

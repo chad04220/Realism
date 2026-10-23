@@ -108,7 +108,10 @@ void initMaterials(float vs) {
     m.roughness = 0.3f; m.pattern = P_CELL; }
   { auto& m = def(ICE, "Ice", 0xd8f0ff, 917, 2100, 2.2f, 40, "Frozen water.");
     m.melt = 0.5f; m.solidifyTo = ICE; m.transparent = true; m.roughness = 0.1f; m.pattern = P_NONE; m.friction = 0.05f; }
-  def(STEAM, "Steam", 0xffffff, 0.6f, 2000, 0.02f, 0, "Water vapour.").phase = GAS;
+  { auto& m = def(STEAM, "Steam", 0xf2f4f6, 0.6f, 2000, 0.02f, 0, "Water vapour. Condenses back into water as it cools.");
+    m.phase = GAS; m.transparent = true; m.pattern = P_NONE; }
+  { auto& m = def(SMOKE, "Smoke", 0x5a5754, 1.0f, 1100, 0.03f, 0, "What burning wood and plastic turn into. Glows while it is hot; settles as soot.");
+    m.phase = GAS; m.transparent = true; m.pattern = P_NONE; }
 
   // Tensile (and bending) strength, Pa. Within one part, neighbouring voxels
   // are held together by this; between parts, by their joint (structure.cpp).

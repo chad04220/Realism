@@ -18,7 +18,7 @@
 
 namespace save {
 
-constexpr uint32_t FORMAT = 1;
+constexpr uint32_t FORMAT = 2;  // 2: gas voxels (smoke, steam)
 
 struct Writer {
   std::vector<uint8_t> buf;
@@ -65,6 +65,7 @@ struct Reader {
     if (n > maxLen || n > left()) { fail("string too long in save data"); return {}; }
     std::string s((const char*)p, n); p += n; return s;
   }
+  bool peekTag(const char* t) const { return left() >= 4 && memcmp(p, t, 4) == 0; }
   bool tag(const char* t) {
     char b[4];
     if (!bytes(b, 4)) return false;

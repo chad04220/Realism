@@ -399,7 +399,12 @@ void Sim::stepPhysics(float dtFrame) {
     Body& b = *bodies[i];
     b.force = vec3(0); b.torque = vec3(0);
     if (b.asleep || b.frozen) continue;
-    if (b.pos.y < -4) { removeBody(i); continue; }
+    if (b.pos.y < -4) {
+      // Fell off the edge of the world: it has left, and the ledger says so.
+      if (!b.ghost && !b.viewmodel) for (auto& br : b.vol.bricks) if (br) debrisEscaped += br->count;
+      removeBody(i);
+      continue;
+    }
     // Rest detection: slow for a while -> sleep. Resting rubble jitters a
     // little under sequential impulses, so the threshold allows ~10 cm/s.
     float e = length2(b.vel) + length2(b.angVel) * 0.05f;

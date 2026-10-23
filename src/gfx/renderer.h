@@ -15,13 +15,11 @@ struct Camera {
 };
 
 struct RenderOptions {
-  bool smooth = true;
   bool shadows = true;
   bool bloom = true;
   float renderScale = 1.0f;
   float exposure = 1.0f;
   bool thermal = false;
-  bool volumetrics = true;
 };
 
 struct HoverInfo {
@@ -38,7 +36,7 @@ class Renderer {
   float gpuMs() const { return gpuMs_; }
   // GPU time of each part of the frame (ms, smoothed), measured with
   // timestamp queries a frame behind so the CPU never waits on the GPU.
-  enum Pass { P_UPLOAD, P_WORLD, P_BODIES, P_PARTICLES, P_VOLUMES, P_POST, P_COUNT };
+  enum Pass { P_UPLOAD, P_WORLD, P_BODIES, P_PARTICLES, P_POST, P_COUNT };
   static const char* passName(int p);
   float passMs(int p) const { return passMs_[p]; }
   float uploadCpuMs() const { return uploadCpuMs_; }
@@ -55,7 +53,7 @@ class Renderer {
   std::vector<std::pair<vec4, vec4>> extraLights;  // (pos+radius, colour) e.g. the player's flashlight
 
  private:
-  struct Tex3D { GLuint data = 0, dens = 0; ivec3 dims; };
+  struct Tex3D { GLuint data = 0; ivec3 dims; };
   struct BodyGpu {
     Tex3D main;
     std::vector<std::pair<uint32_t, Tex3D>> parts;  // rotating parts
@@ -76,23 +74,16 @@ class Renderer {
   void setCommon(Shader& s, const Camera& cam, float time);
   void setMaterials(Shader& s);
   void drawDebris(const Camera& cam, float time);
-  void drawFx(const Camera& cam, float time);
   void bloom();
 
   Sim* sim_ = nullptr;
-  Shader worldShader_, bodyShader_, debrisShader_, fxShader_, brightShader_, blurShader_, compositeShader_, volumeShader_;
-  GLuint airTex_ = 0;
-  std::vector<uint8_t> airCpu_;
-  GLuint volFbo_ = 0, volTex_ = 0, hazeTex_ = 0;
-  int vw_ = 0, vh_ = 0;
+  Shader worldShader_, bodyShader_, debrisShader_, brightShader_, blurShader_, compositeShader_;
   GLuint ldrFbo_ = 0, ldrTex_ = 0;
   GLuint glassFbo_[3] = {0, 0, 0}, glassTex_[3] = {0, 0, 0};
   int gw_[3] = {0, 0, 0}, gh_[3] = {0, 0, 0}, ow_ = 0, oh_ = 0;
   void ensureOutput(int w, int h);
   void buildBackdrop();
-  void uploadAir();
-  void drawVolumes(const Camera& cam, float time);
-  GLuint worldData_ = 0, worldDens_ = 0, worldBricks_ = 0, worldCells_ = 0, dynOcc_ = 0;
+  GLuint worldData_ = 0, worldBricks_ = 0, worldCells_ = 0, dynOcc_ = 0;
   std::vector<uint8_t> scratchCells_;
   // Precomputed sun visibility (kSunVisCS): an R8 value per world voxel,
   // recomputed for the bricks a change can shade.
@@ -102,7 +93,6 @@ class Renderer {
   std::vector<uint8_t> sunDirty_;
   std::vector<uint64_t> sunOccHash_;  // per brick: hash of its opaque voxels when sunlight was last marked
   std::vector<int> sunQueue_;
-  int sunSmooth_ = -1;
   vec3 sunDirUsed_;
   std::vector<uint8_t> brickOcc_;
   bool brickOccDirty_ = true;
@@ -113,11 +103,9 @@ class Renderer {
   std::unordered_map<int, BodyGpu> bodies_;
   GLuint vaoEmpty_ = 0, vaoCube_ = 0, vboCube_ = 0, iboCube_ = 0;
   GLuint vaoDebris_ = 0, vboDebrisInst_ = 0;
-  GLuint vaoFx_ = 0, vboFxQuad_ = 0, vboFxInst_ = 0;
   // Render targets.
   int w_ = 0, h_ = 0, rw_ = 0, rh_ = 0;
   GLuint fbo_ = 0, colorTex_ = 0, depthTex_ = 0;
-  GLuint depthCopyFbo_ = 0, depthCopyTex_ = 0;
   struct Level { GLuint fbo, tex; int w, h; };
   std::vector<Level> bloomLevels_;
   GLuint stamps_[2][P_COUNT + 1] = {};
@@ -135,5 +123,5 @@ class Renderer {
   size_t vram_ = 0;
   RenderOptions opt_;
   Camera cam_;
-  std::vector<uint8_t> scratchData_, scratchDens_;
+  std::vector<uint8_t> scratchData_, scratchOpaque_;
 };

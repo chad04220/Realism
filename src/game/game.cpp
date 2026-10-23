@@ -116,10 +116,8 @@ bool Game::init(const Args& args) {
   sim.events.clear();
   fprintf(stderr, "World built in %.2f s: %zu voxels, %zu MB, %zu bodies\n", plat::now() - t0, sim.world.countSolid(),
           sim.world.memoryBytes() >> 20, sim.bodies.size());
-  ropt.smooth = settings.smooth;
   ropt.shadows = settings.shadows;
   ropt.bloom = settings.bloom;
-  ropt.volumetrics = settings.volumetrics;
   ropt.renderScale = settings.renderScale;
   ropt.exposure = settings.exposure;
   cam.fov = settings.fov * PI / 180.f;
@@ -238,7 +236,6 @@ void Game::frame(float dt) {
       sim.timeScale = sim.timeScale < 1 ? 1.f : 0.2f;
       toast(sim.timeScale < 1 ? "Slow motion \xC3\x97" "0.2 (T)" : "Normal speed", ui::theme::accent);
     }
-    if (in.pressed['V']) { ropt.smooth = !ropt.smooth; toast(ropt.smooth ? "Smooth surfaces" : "Blocky voxels", ui::theme::dim); }
   }
   bool wantCapture = mode_ == M_PLAY && !menu_ && !help_ && plat::focused();
   if (plat::captured() != wantCapture) plat::setCaptured(wantCapture);
@@ -273,6 +270,8 @@ void Game::frame(float dt) {
   flash_ = std::max(0.f, flash_ - dt * 3);
 
   ren.extraLights.clear();
+  if (torchLight_.w > 0) ren.extraLights.push_back({vec4(torchLight_.xyz(), 3.f), vec4(1.2f, 1.8f, 4.5f, 0)});
+  torchLight_ = vec4();
   if (flashlight_ && mode_ == M_PLAY) ren.extraLights.push_back({vec4(cam.pos + cam.forward * 0.6f + cam.right * 0.15f, 9.f), vec4(2.4f, 2.3f, 2.0f, 0)});
   updateDynamicRes(dt);
   RenderOptions frameOpt = ropt;
@@ -718,17 +717,20 @@ void Game::chiselAt(const Hit& h, float radius, float energy) {
     }
     energy -= cost;
     collected[m]++;
-    if (B) { B->vol.set(c.p.x, c.p.y, c.p.z, AIR); B->shapeDirty = true; B->splitCheck = true; B->wake(); }
-    else sim.removeWorld(c.p.x, c.p.y, c.p.z, false);
+    // Chipped-off voxels fall away from the face as fragments.
+    if (B) {
+      Cell cc = B->vol.get(c.p.x, c.p.y, c.p.z);
+      vec3 wp = B->toWorld(vec3(c.p.x + 0.5f, c.p.y + 0.5f, c.p.z + 0.5f), sim.vs);
+      sim.spawnDebris(wp, B->pointVel(wp) + h.normal * 0.6f + rng().unitVec() * 0.3f, cc);
+      B->vol.set(c.p.x, c.p.y, c.p.z, AIR); B->shapeDirty = true; B->splitCheck = true; B->wake();
+    } else sim.removeWorld(c.p.x, c.p.y, c.p.z, true, h.normal * 0.6f + rng().unitVec() * 0.3f);
     removed++;
   }
   if (removed) {
-    for (int i = 0; i < 4; i++) sim.emit(FX_DUST, h.point + h.normal * 0.02f, h.normal * 0.6f + rng().unitVec() * 0.4f, 0.8f, sim.vs * 2.5f, matLinear(firstMat));
     Sfx s = MATS[firstMat].metal > 0.5f ? SFX_METAL : (firstMat == OAK || firstMat == PINE) ? SFX_WOOD : SFX_STONE;
     audio.play(s, h.point, 0.35f, 1.6f);
   } else {
     audio.play(SFX_METAL, h.point, 0.25f, 2.f);
-    sim.emit(FX_SPARK, h.point, h.normal * 2 + rng().unitVec(), 0.2f, sim.vs * 0.4f, vec3(3, 2, 1));
   }
 }
 
@@ -875,8 +877,6 @@ void Game::useTools(float dt, plat::Input& in) {
           Sfx s = MATS[m].metal > 0.5f ? SFX_METAL : (m == OAK || m == PINE || m == BARK) ? SFX_WOOD
                   : (m == GLASS || m == BULBGLASS) ? SFX_GLASS : (MATS[m].tough < 25) ? SFX_SOFT : SFX_STONE;
           audio.play(s, hit_.point, 0.4f + e / 150.f, 0.9f + rng().f() * 0.2f);
-          if (MATS[m].metal > 0.5f) for (int i = 0; i < 6; i++) sim.emit(FX_SPARK, hit_.point, hit_.normal * 2.5f + rng().unitVec() * 2.f, 0.35f, sim.vs * 0.4f, vec3(3, 2.2f, 1));
-          else for (int i = 0; i < 5; i++) sim.emit(FX_DUST, hit_.point, hit_.normal * 0.8f + rng().unitVec() * 0.6f, 0.9f, sim.vs * 2.f, matLinear(m));
           shake_ = std::max(shake_, e / 150.f);
         }
       }
@@ -934,20 +934,18 @@ void Game::useTools(float dt, plat::Input& in) {
       bool reach = hit_.hit && hit_.t < 1.3f;
       if (L) {
         useAnim_ = 1;
-        for (int i = 0; i < 3; i++)
-          sim.emit(FX_FIRE, nozzle + cam.forward * rng().range(0.0f, 0.1f), cam.forward * rng().range(3, 6) + rng().unitVec() * 0.3f, rng().range(0.08f, 0.2f), sim.vs * 1.4f, vec3(0.6f, 0.9f, 2.2f));
+        // The torch's gas comes from outside the world: its flame is light only.
+        torchLight_ = vec4(nozzle + cam.forward * 0.12f, 1.f);
         if (sim.airReady) {
           sim.air.driveTowards(nozzle + cam.forward * 0.25f, cam.forward * 9.f, 0.1f, std::min(1.f, dt * 8));
           sim.air.addHeat(nozzle + cam.forward * 0.3f, 3000.f * dt);
         }
         if (reach) {
           sim.addHeat(hit_, 12000.f, dt, 2.5f);
-          if (rng().f() < 0.3f) sim.emit(FX_SPARK, hit_.point, hit_.normal + rng().unitVec(), 0.25f, sim.vs * 0.3f, vec3(3, 2, 1));
           if (hit_.body >= 0) sim.bodies[hit_.body]->wake();
         }
         audio.setLoop(L_TORCH, 0.35f, nozzle);
       } else if (R) {
-        for (int i = 0; i < 3; i++) sim.emit(FX_STEAM, nozzle, cam.forward * rng().range(3, 5) + rng().unitVec() * 0.5f, 0.5f, sim.vs * 3, vec3(1));
         if (reach) { sim.addHeat(hit_, -6000.f, dt, 3.f); extinguish(hit_, 3.f); }
         audio.setLoop(L_TORCH, 0.2f, nozzle);
       } else {
@@ -966,7 +964,6 @@ void Game::useTools(float dt, plat::Input& in) {
           sim.spawnDebris(nozzle, dir * (R ? 6.f : 11.f) + pl_.vel, c);
           if (!sim.debris.empty()) sim.debris.back().life = 4;
         }
-        if (rng().f() < 0.5f) sim.emit(FX_SPRAY, nozzle, cam.forward * 8 + rng().unitVec(), 0.4f, sim.vs * 1.5f);
         audio.setLoop(L_WATER, 0.4f, nozzle);
       } else {
         audio.setLoop(L_WATER, 0, cam.pos);
@@ -1075,8 +1072,8 @@ void Game::handleEvents() {
   // Ambient loops: fire crackle near the nearest flame, motor hum near powered motors.
   vec3 firePos = cam.pos;
   float best = 1e9f;
-  for (size_t i = 0; i < sim.fx.size(); i += 5)
-    if (sim.fx[i].kind == FX_FIRE) { float d = length2(sim.fx[i].p - cam.pos); if (d < best) { best = d; firePos = sim.fx[i].p; } }
+  for (const vec3& p : sim.fireSpots) { float d = length2(p - cam.pos); if (d < best) { best = d; firePos = p; } }
+  for (const vec3& p : sim.gas.hot) { float d = length2(p - cam.pos); if (d < best) { best = d; firePos = p; } }
   audio.setLoop(L_FIRE, best < 1e8f ? std::min(1.f, 0.15f + sim.stats.burning * 0.002f) : 0.f, firePos);
   float hum = 0;
   vec3 humPos = cam.pos;
@@ -1149,7 +1146,7 @@ void Game::saveScreenshot(const std::string& path) {
 
 // A tiny command language for automated runs (tests, screenshots):
 //   pos x y z yaw pitch | wait frames | tool n | press KEY | hold KEY frames | click L|R | holdclick L|R frames
-//   shot file.ppm | workshop | play | blueprint NAME | launch | explode x y z J | log
+//   shot file.ppm | workshop | play | blueprint NAME | launch | explode x y z J | ignite x y z r fuel | log
 void Game::runScriptLine(const std::string& line, bool& quit) {
   std::istringstream ss(line);
   std::string cmd;
@@ -1192,6 +1189,27 @@ void Game::runScriptLine(const std::string& line, bool& quit) {
   else if (cmd == "load") { std::string n; std::getline(ss >> std::ws, n); if (n.empty()) n = "script"; std::string e; if (!loadGame(n, &e)) fprintf(stderr, "script: load failed: %s\n", e.c_str()); }
   else if (cmd == "blueprint") { std::string n; std::getline(ss, n); while (!n.empty() && n[0] == ' ') n.erase(0, 1); workshop->loadBlueprint(n); }
   else if (cmd == "launch") { workshop->launch(); }
+  else if (cmd == "ignite") {
+    // ignite x y z radius fuel: set the flammable world voxels within radius
+    // (metres) of a point burning, with `fuel` thermal seconds left.
+    vec3 p; float r = 0.2f, fuel = 2.f;
+    ss >> p.x >> p.y >> p.z >> r >> fuel;
+    ivec3 c = sim.cellOf(p);
+    int R = (int)std::ceil(r / sim.vs);
+    for (int y = c.y - R; y <= c.y + R; y++)
+      for (int z = c.z - R; z <= c.z + R; z++)
+        for (int x = c.x - R; x <= c.x + R; x++) {
+          if (!sim.world.inb(x, y, z) || length(sim.cellCenter(x, y, z) - p) > r) continue;
+          Brick* br = sim.world.brick(x, y, z);
+          int l = lidx(x, y, z);
+          if (!br || !br->mat[l] || MATS[br->mat[l]].ignite <= 0) continue;
+          br->flags[l] |= F_BURN;
+          br->fuel[l] = fuel;
+          br->temp[l] = std::max(br->temp[l], MATS[br->mat[l]].ignite + 50.f);
+          sim.world.markDirty(x, y, z);
+          sim.markHot(sim.world, sim.worldHot, x, y, z);
+        }
+  }
   else if (cmd == "explode") { vec3 p; float e; ss >> p.x >> p.y >> p.z >> e; sim.explode(p, e); }
   else if (cmd == "toggle") { updateHover(); useKey(); }
   else if (cmd == "switch") {
@@ -1201,11 +1219,25 @@ void Game::runScriptLine(const std::string& line, bool& quit) {
       for (uint32_t c : sim.bodies[i]->compIds)
         if (comp(c).type == C_SWITCH && (comp(c).object == name || name.empty())) toggleSwitch((int)i, c);
   }
-  else if (cmd == "smooth") { int v; ss >> v; ropt.smooth = v != 0; }
   else if (cmd == "log") {
-    fprintf(stderr, "[t=%.2f] bodies=%zu awake=%d debris=%zu fx=%zu burning=%d hot=%d powered=%d circuits=%d phys=%.1fms therm=%.1fms air=%.1fms(%d) fluid=%.1fms gpu=%.1fms fps=%.0f\n",
-            sim.time, sim.bodies.size(), sim.stats.awake, sim.debris.size(), sim.fx.size(), sim.stats.burning, sim.stats.hot,
+    fprintf(stderr, "[t=%.2f] bodies=%zu awake=%d debris=%zu gas=%zu burning=%d hot=%d powered=%d circuits=%d phys=%.1fms therm=%.1fms air=%.1fms(%d) fluid=%.1fms gpu=%.1fms fps=%.0f\n",
+            sim.time, sim.bodies.size(), sim.stats.awake, sim.debris.size(), sim.gas.count(), sim.stats.burning, sim.stats.hot,
             sim.stats.poweredDevices, sim.stats.circuits, sim.stats.physicsMs, sim.stats.thermalMs, sim.air.stepMs, sim.air.activeCells, sim.stats.fluidMs, ren.gpuMs(), fps_);
+    vec3 lo(1e9f), hi(-1e9f), sum;
+    size_t n = 0;
+    for (size_t bi = 0; bi < sim.gas.bricks.size(); bi++) {
+      const GasBrick* gb = sim.gas.bricks[bi].get();
+      if (!gb || !gb->count) continue;
+      int bx = (int)bi % sim.world.bx, bz = ((int)bi / sim.world.bx) % sim.world.bz, by = (int)bi / (sim.world.bx * sim.world.bz);
+      for (int l = 0; l < BS3; l++) {
+        if (!gb->mat[l]) continue;
+        vec3 p = sim.cellCenter(bx * 16 + (l & 15), by * 16 + (l >> 8), bz * 16 + ((l >> 4) & 15));
+        for (int a = 0; a < 3; a++) { lo[a] = std::min(lo[a], p[a]); hi[a] = std::max(hi[a], p[a]); }
+        sum += p; n++;
+      }
+    }
+    if (n) fprintf(stderr, "  gas: %zu voxels from (%.1f %.1f %.1f) to (%.1f %.1f %.1f), mean (%.1f %.1f %.1f); %ld left\n", n, lo.x, lo.y, lo.z,
+                   hi.x, hi.y, hi.z, sum.x / n, sum.y / n, sum.z / n, sim.gas.escaped);
   } else if (cmd == "probe") {
     vec3 p; ss >> p.x >> p.y >> p.z;
     vec3 v = sim.air.velocity(p);

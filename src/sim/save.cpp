@@ -338,6 +338,24 @@ void writeSim(Writer& w, const Sim& s) {
     for (int i = 0; i < 3; i++) writeFloatRuns(w, *Access::airFields(a, i));
     writeFloatRuns(w, a.T); writeFloatRuns(w, a.smk); writeFloatRuns(w, a.stm);
   }
+
+  // Gas voxels, and what has left the world (format 2).
+  w.tag("GAS ");
+  w.u64((uint64_t)s.gas.escaped);
+  w.u64((uint64_t)s.debrisEscaped);
+  const Volume& wv = s.world;
+  std::vector<GasLayer::Pending> all;
+  for (size_t bi = 0; bi < s.gas.bricks.size(); bi++) {
+    const GasBrick* gb = s.gas.bricks[bi].get();
+    if (!gb || !gb->count) continue;
+    int bx = (int)bi % wv.bx, bz = ((int)bi / wv.bx) % wv.bz, by = (int)bi / (wv.bx * wv.bz);
+    for (int l = 0; l < BS3; l++)
+      if (gb->mat[l]) all.push_back({ivec3(bx * 16 + (l & 15), by * 16 + (l >> 8), bz * 16 + ((l >> 4) & 15)), gb->mat[l], gb->temp[l]});
+  }
+  w.u32((uint32_t)all.size());
+  for (auto& g : all) { w.iv3(g.c); w.u8(g.mat); w.f32(g.temp); }
+  w.u32((uint32_t)s.gas.pending().size());
+  for (auto& g : s.gas.pending()) { w.iv3(g.c); w.u8(g.mat); w.f32(g.temp); }
 }
 
 bool readSim(Reader& r, Sim& s, MatMap& mats, bool& replaced) {
@@ -505,6 +523,29 @@ bool readSim(Reader& r, Sim& s, MatMap& mats, bool& replaced) {
     if (!readFloatRuns(r, a.T) || !readFloatRuns(r, a.smk) || !readFloatRuns(r, a.stm)) return false;
     a.texDirty = true;
   }
+  // Gas voxels (saves from before format 2 have none).
+  if (r.ok && r.peekTag("GAS ")) {
+    r.tag("GAS ");
+    long esc = (long)r.u64(), desc = (long)r.u64();
+    for (int part = 0; part < 2 && r.ok; part++) {
+      uint32_t n = r.count(1u << 28, 17, "gas voxel");
+      std::vector<GasLayer::Pending> pend;
+      for (uint32_t i = 0; i < n && r.ok; i++) {
+        ivec3 c = r.iv3();
+        uint8_t m = mats(r.u8());
+        float T = r.f32();
+        if (!r.ok) break;
+        if (!s.world.inb(c.x, c.y, c.z) || !isGas(m) || !std::isfinite(T)) return r.fail("bad gas voxel in save");
+        if (part == 0) {
+          if (s.gas.at(c.x, c.y, c.z)) return r.fail("two gas voxels in one cell in save");
+          s.gas.restore(s, c, m, T);
+        } else pend.push_back({c, m, T});
+      }
+      if (part == 1) s.gas.setPending(std::move(pend));
+    }
+    s.gas.escaped = esc;
+    s.debrisEscaped = desc;
+  }
   // Local structural checks start from the last full solve's loads: work them
   // out again for the loaded world without changing anything in it.
   if (r.ok) s.checkAllStructures(false);
@@ -637,6 +678,22 @@ uint64_t stateHash(const Sim& s, std::vector<std::pair<std::string, uint64_t>>* 
     field(s.air.T); field(s.air.smk); field(s.air.stm);
   }
   mark("air");
+  {
+    const Volume& wv = s.world;
+    for (size_t bi = 0; bi < s.gas.bricks.size(); bi++) {
+      const GasBrick* gb = s.gas.bricks[bi].get();
+      if (!gb || !gb->count) continue;
+      int bix = (int)bi;
+      h = fnv(h, &bix, sizeof bix);
+      for (int l = 0; l < BS3; l++)
+        if (gb->mat[l]) { h = fnv(h, &l, sizeof l); h = fnv(h, &gb->mat[l], 1); h = fnv(h, &gb->temp[l], 4); }
+    }
+    (void)wv;
+    for (auto& p : s.gas.pending()) { h = fnv(h, &p.c, sizeof p.c); h = fnv(h, &p.mat, 1); h = fnv(h, &p.temp, 4); }
+    int64_t esc[2] = {s.gas.escaped, s.debrisEscaped};
+    h = fnv(h, esc, sizeof esc);
+  }
+  mark("gas");
   return h;
 }
 

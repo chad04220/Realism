@@ -30,6 +30,7 @@ struct Component {
   float capacity = 0, charge = 0;  // Wh
   float fuel = 0;           // rocket burn seconds left
   bool lit = false;         // rocket burning
+  float exhaustCarry = 0;   // fraction of a propellant voxel due to burn next step
   float fuse = -1;          // seconds until a charge detonates
   // Live electrical state, refreshed by the circuit solver.
   bool powered = false, shorted = false;

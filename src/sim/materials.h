@@ -9,7 +9,7 @@ enum Mat : uint8_t {
   COPPER, ALU, GLASS, BULBGLASS, RUBBER, PLASTIC, LIION, TERM_POS, TERM_NEG, FILAMENT, MOTOR, SHAFT,
   SWITCH_ON, SWITCH_OFF, NICHROME, SOLAR, CHARGE, PROPELLANT, ASH, MOLTEN, TILE, CHARCOAL, BRASS, GRAVEL,
   BASALT, CANVAS, BARK, MAGNET, GOLD, PAINT_RED, PAINT_BLUE, PAINT_WHITE, CARBON, ICE, STEAM,
-  MAT_COUNT
+  SMOKE, MAT_COUNT
 };
 
 enum Phase : uint8_t { GAS, SOLID, POWDER, LIQUID };
@@ -49,6 +49,7 @@ void initMaterials(float voxelSize);
 inline bool isSolid(uint8_t m) { return MATS[m].phase == SOLID; }
 inline bool isLiquid(uint8_t m) { return MATS[m].phase == LIQUID; }
 inline bool isPowder(uint8_t m) { return MATS[m].phase == POWDER; }
+inline bool isGas(uint8_t m) { return m != 0 && MATS[m].phase == GAS; }
 inline bool isFluidish(uint8_t m) { return MATS[m].phase == LIQUID || MATS[m].phase == POWDER; }
 inline bool isSpecialElectric(uint8_t m) {
   return m == TERM_POS || m == TERM_NEG || m == SWITCH_ON || m == SWITCH_OFF || m == FILAMENT || m == MOTOR ||

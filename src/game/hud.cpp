@@ -263,15 +263,18 @@ void Game::drawStats() {
   float yy = y + 10 * s;
   auto ln = [&](const char* t) { text(x + 12 * s, yy, t, 13 * s, theme::dim); yy += 19 * s; };
   snprintf(b, sizeof b, "%.0f fps \xC2\xB7 GPU %.1f ms \xC2\xB7 %d bodies drawn", fps_, ren.gpuMs(), ren.bodiesDrawn); ln(b);
-  snprintf(b, sizeof b, "GPU: world %.1f \xC2\xB7 bodies %.1f \xC2\xB7 smoke %.1f \xC2\xB7 post %.1f", ren.passMs(Renderer::P_WORLD),
-           ren.passMs(Renderer::P_BODIES), ren.passMs(Renderer::P_VOLUMES), ren.passMs(Renderer::P_POST)); ln(b);
+  snprintf(b, sizeof b, "GPU: world %.1f \xC2\xB7 bodies %.1f \xC2\xB7 debris %.1f \xC2\xB7 post %.1f", ren.passMs(Renderer::P_WORLD),
+           ren.passMs(Renderer::P_BODIES), ren.passMs(Renderer::P_PARTICLES), ren.passMs(Renderer::P_POST)); ln(b);
   snprintf(b, sizeof b, "Render %d\xC3\x97%d%s \xC2\xB7 uploads %.1f ms CPU", ren.renderWidth(), ren.renderHeight(),
            dynScale_ < 0.999f ? " (dynamic)" : "", ren.uploadCpuMs()); ln(b);
   int vt, vf;
   if (ren.vramInfo(vt, vf)) { snprintf(b, sizeof b, "VRAM %d of %d MB in use", vt - vf, vt); ln(b); }
-  snprintf(b, sizeof b, "Physics %.1f ms \xC2\xB7 heat %.1f ms \xC2\xB7 fluid %.1f ms", sim.stats.physicsMs, sim.stats.thermalMs, sim.stats.fluidMs); ln(b);
+  snprintf(b, sizeof b, "Physics %.1f ms \xC2\xB7 heat %.1f ms \xC2\xB7 fluid %.1f ms \xC2\xB7 gas %.1f ms", sim.stats.physicsMs, sim.stats.thermalMs,
+           sim.stats.fluidMs, sim.stats.gasMs); ln(b);
   snprintf(b, sizeof b, "Bodies %zu (%d awake) \xC2\xB7 contacts %d", sim.bodies.size(), sim.stats.awake, sim.stats.contacts); ln(b);
-  snprintf(b, sizeof b, "Debris %zu \xC2\xB7 effects %zu \xC2\xB7 fluid cells %zu", sim.debris.size(), sim.fx.size(), sim.fluidActive.size()); ln(b);
+  snprintf(b, sizeof b, "Debris %zu \xC2\xB7 smoke %zu \xC2\xB7 steam %zu \xC2\xB7 fluid cells %zu", sim.debris.size(), sim.gas.countOf(SMOKE),
+           sim.gas.countOf(STEAM), sim.fluidActive.size()); ln(b);
+  snprintf(b, sizeof b, "Matter %zu voxels (%ld left the world)", sim.matterCount(), sim.gas.escaped + sim.debrisEscaped); ln(b);
   snprintf(b, sizeof b, "Hot voxels %d \xC2\xB7 burning %d \xC2\xB7 circuits %d", sim.stats.hot, sim.stats.burning, sim.stats.circuits); ln(b);
   snprintf(b, sizeof b, "World %zu M voxels \xC2\xB7 %zu MB RAM", sim.world.countSolid() / 1000000, sim.world.memoryBytes() >> 20); ln(b);
   snprintf(b, sizeof b, "Voxel %.1f cm \xC2\xB7 grid %d\xC3\x97%d\xC3\x97%d", sim.vs * 100, sim.world.nx, sim.world.ny, sim.world.nz); ln(b);
@@ -290,7 +293,7 @@ void Game::drawHelp() {
   KV left[] = {{"WASD", "Move"}, {"Mouse", "Look"}, {"Space", "Jump / swim up"}, {"Shift", "Sprint"}, {"Ctrl", "Crouch"},
                {"1 \xE2\x80\x93 9  /  wheel", "Choose tool"}, {"E", "Use: switches, motors, fuses, rockets"}, {"F", "Flashlight"},
                {"G", "Detonate remote charges"}, {"N", "Fly mode"}, {"Tab", "Workshop (build machines)"}};
-  KV right[] = {{"T", "Slow motion"}, {"P", "Pause the simulation"}, {"V", "Smooth / blocky voxels"}, {"F2", "Hide HUD"},
+  KV right[] = {{"T", "Slow motion"}, {"P", "Pause the simulation"}, {"F2", "Hide HUD"},
                 {"F3", "Performance stats"}, {"F5 / F9", "Quicksave / quickload"}, {"F11", "Fullscreen"},
                 {"Esc", "Menu"}};
   float yy = y + 110 * s;
@@ -369,14 +372,11 @@ void Game::drawMenu() {
   float bx = x + 36 * s, bw = w - 72 * s, yy = ty + 66 * s;
   auto note = [&](const char* t) { text(bx, yy, t, 13 * s, theme::faint); yy += 26 * s; };
   if (settingsTab_ == 0) {
-    if (toggle("Smooth surfaces", bx, yy, bw, ropt.smooth)) settings.smooth = ropt.smooth;
-    yy += 38 * s;
     if (toggle("Sun shadows", bx, yy, bw, ropt.shadows)) settings.shadows = ropt.shadows;
     yy += 38 * s;
     if (toggle("Bloom", bx, yy, bw, ropt.bloom)) settings.bloom = ropt.bloom;
     yy += 38 * s;
-    if (toggle("Volumetric smoke, steam and heat haze", bx, yy, bw, ropt.volumetrics)) settings.volumetrics = ropt.volumetrics;
-    yy += 46 * s;
+    yy += 8 * s;
     if (slider("Render scale", bx, yy, bw, ropt.renderScale, 0.4f, 1.5f, "%.2f\xC3\x97")) settings.renderScale = ropt.renderScale;
     yy += 52 * s;
     toggle("Dynamic resolution", bx, yy, bw, settings.dynamicRes);
@@ -438,7 +438,7 @@ bool Game::selftest() {
     Settings s;
     s.voxelSize = 0.025f; s.worldX = 12; s.worldY = 6; s.worldZ = 14; s.thermalWarp = 7;
     s.threads = 3; s.width = 1280; s.height = 720; s.fullscreen = true; s.vsync = false;
-    s.renderScale = 0.75f; s.dynamicRes = false; s.targetFps = 90; s.smooth = false; s.shadows = true; s.bloom = false; s.volumetrics = true;
+    s.renderScale = 0.75f; s.dynamicRes = false; s.targetFps = 90; s.shadows = true; s.bloom = false;
     s.fov = 61; s.exposure = 1.5f; s.uiScale = 1.25f; s.sensitivity = 2; s.invertY = true; s.volume = 0.5f;
     s.save(p);
     Settings t;
@@ -449,8 +449,8 @@ bool Game::selftest() {
                 std::fabs(t.thermalWarp - s.thermalWarp) < 1e-5f && t.threads == s.threads &&
                 t.width == s.width && t.height == s.height && t.fullscreen == s.fullscreen && t.vsync == s.vsync &&
                 std::fabs(t.renderScale - s.renderScale) < 1e-5f && t.dynamicRes == s.dynamicRes &&
-                std::fabs(t.targetFps - s.targetFps) < 1e-5f && t.smooth == s.smooth && t.shadows == s.shadows &&
-                t.bloom == s.bloom && t.volumetrics == s.volumetrics && std::fabs(t.fov - s.fov) < 1e-5f &&
+                std::fabs(t.targetFps - s.targetFps) < 1e-5f && t.shadows == s.shadows &&
+                t.bloom == s.bloom && std::fabs(t.fov - s.fov) < 1e-5f &&
                 std::fabs(t.exposure - s.exposure) < 1e-5f && std::fabs(t.uiScale - s.uiScale) < 1e-5f &&
                 std::fabs(t.sensitivity - s.sensitivity) < 1e-5f && t.invertY == s.invertY &&
                 std::fabs(t.volume - s.volume) < 1e-5f;
@@ -981,6 +981,48 @@ bool Game::selftest() {
     Game::saveDir.clear();
     toasts_.clear();
   }
+  // Matter is never created or destroyed, only changed in form: wood burns
+  // to smoke and ash, water boils to steam and condenses again, a charge
+  // becomes its own fireball and throws what it breaks. Every voxel in the
+  // world, the bodies, in flight and in the gas layer (plus whatever has
+  // left through the world's open sides) is counted before and after.
+  {
+    const float vs = sim.vs;
+    const Volume& W = sim.world;
+    int x0 = (int)(13.3f / vs), z0 = (int)(1.0f / vs);
+    int gy = W.ny - 1;
+    while (gy > 0 && W.mat(x0, gy - 1, z0) == AIR) gy--;
+    size_t before = sim.matterCount();
+    fprintf(stderr, "  matter before the test: %zu smoke, %zu steam, %ld gas and %ld solid voxels already left, %d burning\n",
+            sim.gas.countOf(SMOKE), sim.gas.countOf(STEAM), sim.gas.escaped, sim.debrisEscaped, sim.stats.burning);
+    auto put = [&](int x, int y, int z, uint8_t m, float T, uint8_t flags, float fuel) {
+      if (W.mat(x, y, z) != AIR) return;
+      Cell c; c.mat = m; c.temp = T; c.flags = flags; c.fuel = fuel;
+      sim.putWorld(x, y, z, c);
+    };
+    for (int x = 0; x < 6; x++) for (int z = 0; z < 6; z++) {
+      for (int y = 0; y < 3; y++) put(x0 + x, gy + y, z0 + z, STEEL, 1300, 0, 0);  // a white-hot block...
+      for (int y = 3; y < 5; y++) put(x0 + x, gy + y, z0 + z, WATER, 95, 0, 0);    // ...with water on it
+    }
+    for (int x = 0; x < 8; x++) for (int y = 0; y < 8; y++) for (int z = 0; z < 8; z++)
+      put(x0 + 16 + x, gy + y, z0 + z, PINE, 700, F_BURN, 1.5f);  // a burning pine block, nearly spent
+    for (int x = 0; x < 3; x++) for (int y = 0; y < 3; y++) for (int z = 0; z < 3; z++)
+      put(x0 + 40 + x, gy + y, z0 + z, CHARGE, 900, 0, 0);  // a charge, past its ignition point
+    size_t placed = sim.matterCount() - before;
+    before = sim.matterCount();
+    size_t smoke = 0, steam = 0;
+    for (int i = 0; i < 360; i++) {
+      sim.step(1.f / 60.f);
+      smoke = std::max(smoke, sim.gas.countOf(SMOKE));
+      steam = std::max(steam, sim.gas.countOf(STEAM));
+    }
+    size_t after = sim.matterCount();
+    fprintf(stderr, "  gas step %.1f ms for %zu gas voxels\n", sim.stats.gasMs, sim.gas.count());
+    fprintf(stderr, "  matter: %zu placed, %zu -> %zu voxels; up to %zu smoke and %zu steam voxels; %ld gas and %ld solid voxels left\n", placed,
+            before, after, smoke, steam, sim.gas.escaped, sim.debrisEscaped);
+    check(after == before, "fire, boiling and a blast neither create nor destroy a voxel");
+    check(smoke > 0 && steam > 0, "burning makes smoke voxels and boiling makes steam voxels");
+  }
   // Re-initialising a Sim is how "new world" works: no clock, body, effect,
   // radiator, flow field or statistic may survive it.
   {
@@ -990,7 +1032,7 @@ bool Game::selftest() {
     sim.events.push_back(SimEvent{});
     sim.waterFlow.push_back(vec3(1, 2, 3));
     sim.init(sim.cfg);
-    check(sim.time == 0 && sim.bodies.empty() && sim.debris.empty() && sim.fx.empty() && sim.events.empty() &&
+    check(sim.time == 0 && sim.bodies.empty() && sim.debris.empty() && sim.gas.count() == 0 && sim.flashes.empty() && sim.events.empty() &&
               sim.radiators.empty() && sim.waterFlow.empty() && sim.stats.burning == 0 && !sim.airReady &&
               sim.world.countSolid() == 0,
           "Sim::init clears every per-run system");
@@ -1267,8 +1309,8 @@ void Game::benchmark() {
   snprintf(line, sizeof line, "Realism %s benchmark: %s | %d x %d window, render scale %.2f, %.1f cm voxels\n", REALISM_VERSION,
            (const char*)glGetString(GL_RENDERER), plat::width(), plat::height(), ropt.renderScale, sim.vs * 100);
   report += line;
-  snprintf(line, sizeof line, "%-15s %8s %8s %7s %7s %7s %7s %7s %7s %7s\n", "view", "frame ms", "GPU ms", "upload", "world",
-           "bodies", "partcl", "smoke", "post", "CPU up");
+  snprintf(line, sizeof line, "%-15s %8s %8s %7s %7s %7s %7s %7s %7s\n", "view", "frame ms", "GPU ms", "upload", "world",
+           "bodies", "debris", "post", "CPU up");
   report += line;
   title_ = false;
   menu_ = help_ = false;
@@ -1304,8 +1346,8 @@ void Game::benchmark() {
               atoi(getenv("REALISM_DEBUG_PASS")) == 11 ? "march" : "shadow");
     sumFrame += frameMs;
     sumGpu += gpu / MEASURE;
-    snprintf(line, sizeof line, "%-15s %8.2f %8.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f\n", v.name, frameMs, gpu / MEASURE,
-             pass[0] / MEASURE, pass[1] / MEASURE, pass[2] / MEASURE, pass[3] / MEASURE, pass[4] / MEASURE, pass[5] / MEASURE,
+    snprintf(line, sizeof line, "%-15s %8.2f %8.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f\n", v.name, frameMs, gpu / MEASURE,
+             pass[0] / MEASURE, pass[1] / MEASURE, pass[2] / MEASURE, pass[3] / MEASURE, pass[4] / MEASURE,
              ren.uploadCpuMs());
     report += line;
     fprintf(stderr, "%s", line);

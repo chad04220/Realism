@@ -167,6 +167,7 @@ class Game {
   float flash_ = 0, shake_ = 0;
   double lastTime_ = 0;
   float fps_ = 60, frameMs_ = 16;
+  vec4 torchLight_;  // the blowtorch's flame this frame (w = on)
   float dynScale_ = 1, dynTimer_ = 0;  // dynamic resolution: fraction of the chosen render scale
   void updateDynamicRes(float dt);
   float time_ = 0;

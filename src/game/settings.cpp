@@ -68,10 +68,8 @@ void Settings::load(const std::string& path) {
     else if (k == "render_scale") number(renderScale);
     else if (k == "dynamic_resolution") flag(dynamicRes);
     else if (k == "target_fps") number(targetFps);
-    else if (k == "smooth_surfaces") flag(smooth);
     else if (k == "shadows") flag(shadows);
     else if (k == "bloom") flag(bloom);
-    else if (k == "volumetrics") flag(volumetrics);
     else if (k == "fov") number(fov);
     else if (k == "exposure") number(exposure);
     else if (k == "ui_scale") number(uiScale);
@@ -119,7 +117,7 @@ void Settings::save(const std::string& path) const {
   f << "render_scale = " << renderScale << "     # 1.0 = native; lower for speed\n";
   f << "dynamic_resolution = " << (dynamicRes ? 1 : 0) << "  # drop below render_scale when the GPU falls behind target_fps\n";
   f << "target_fps = " << targetFps << "\n";
-  f << "smooth_surfaces = " << (smooth ? 1 : 0) << "\nshadows = " << (shadows ? 1 : 0) << "\nbloom = " << (bloom ? 1 : 0) << "\nvolumetrics = " << (volumetrics ? 1 : 0) << "\n";
+  f << "shadows = " << (shadows ? 1 : 0) << "\nbloom = " << (bloom ? 1 : 0) << "\n";
   f << "fov = " << fov << "\nexposure = " << exposure << "\nui_scale = " << uiScale << "\n";
   f << "# Controls and sound\n";
   f << "mouse_sensitivity = " << sensitivity << "\ninvert_y = " << (invertY ? 1 : 0) << "\nvolume = " << volume << "\n";

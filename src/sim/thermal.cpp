@@ -271,11 +271,18 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
     vec3 lc(c.x + 0.5f, c.y + 0.5f, c.z + 0.5f);
     return owner ? owner->toWorld(lc, vs) : lc * vs;
   };
-  auto removeCell = [&](const ivec3& c) {
+  // A voxel that turns to gas leaves its volume and joins the gas layer at
+  // the same place in the world (for a body, wherever that voxel now is).
+  auto toGas = [&](const ivec3& c, uint8_t gasMat, float T) {
+    ivec3 wc = owner ? s.cellOf(worldPos(c)) : c;
     if (owner) { owner->vol.set(c.x, c.y, c.z, AIR); owner->shapeDirty = true; owner->splitCheck = true; }
-    else s.removeWorld(c.x, c.y, c.z, false);
+    else {
+      uint8_t old = s.world.mat(c.x, c.y, c.z);
+      s.world.set(c.x, c.y, c.z, AIR);
+      s.worldChanged(c.x, c.y, c.z, old);
+    }
+    s.gas.add(s, wc, gasMat, T);
   };
-  int fxBudget = 0;
   for (auto& e : events) {
     Brick* br = v.inb(e.c.x, e.c.y, e.c.z) ? v.brick(e.c.x, e.c.y, e.c.z) : nullptr;
     if (!br) continue;
@@ -295,21 +302,26 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
         br->flags[l] &= ~F_BURN;
         br->temp[l] = std::min(br->temp[l], 90.f);
         v.markDirty(e.c.x, e.c.y, e.c.z);
-        if (fxBudget++ < 40) s.emit(FX_STEAM, worldPos(e.c), vec3(0, 0.6f, 0), 1.5f, vs * 4);
-        if (s.airReady) s.air.addSmoke(worldPos(e.c), 0, 0.1f);
         break;
       case T_BURNOUT: {
         uint8_t res = MATS[m].residue;
         if (m == LIION) res = ASH;
-        if (res == AIR) { removeCell(e.c); break; }
         float T = br->temp[l];
+        // What burns goes up in smoke, still hot enough to glow: that is the
+        // flame. Some of it (more for wood than for plastic) stays as ash.
+        float pAsh = res == ASH ? (m == RUBBER || m == PLASTIC ? 0.15f : 0.3f) : 0.f;
+        if (res == AIR || (res == ASH && rng().f() >= pAsh)) {
+          toGas(e.c, SMOKE, std::max(T, MATS[m].flameTemp));
+          for (auto& d : DIRS6) s.supportSeeds.push_back(packKey(e.c.x + d[0], e.c.y + d[1], e.c.z + d[2]));
+          break;
+        }
         if (owner) {
           Cell c = owner->vol.get(e.c.x, e.c.y, e.c.z);
           c.mat = res; c.flags = 0; c.fuel = 0; c.temp = T;
           if (isFluidish(res)) {  // ash falls out of a body as loose dust
             owner->vol.set(e.c.x, e.c.y, e.c.z, AIR);
             owner->shapeDirty = true; owner->splitCheck = true;
-            if (rng().f() < 0.25f) s.spawnDebris(worldPos(e.c), owner->pointVel(worldPos(e.c)), c);
+            s.spawnDebris(worldPos(e.c), owner->pointVel(worldPos(e.c)), c);
           } else {
             owner->vol.put(e.c.x, e.c.y, e.c.z, c);
             owner->shapeDirty = true;
@@ -351,14 +363,14 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
       case T_THAW: {
         Cell c = v.get(e.c.x, e.c.y, e.c.z);
         c.mat = WATER;
-        if (owner) { s.spawnDebris(worldPos(e.c), owner->pointVel(worldPos(e.c)), c); removeCell(e.c); }
-        else s.putWorld(e.c.x, e.c.y, e.c.z, c);
+        if (owner) {
+          s.spawnDebris(worldPos(e.c), owner->pointVel(worldPos(e.c)), c);
+          owner->vol.set(e.c.x, e.c.y, e.c.z, AIR); owner->shapeDirty = true; owner->splitCheck = true;
+        } else s.putWorld(e.c.x, e.c.y, e.c.z, c);
         break;
       }
       case T_BOIL:
-        if (fxBudget++ < 60) s.emit(FX_STEAM, worldPos(e.c), vec3(0, 0.8f, 0), 2.f, vs * 5);
-        if (s.airReady) s.air.addSmoke(worldPos(e.c), 0, 0.15f);
-        removeCell(e.c);
+        toGas(e.c, STEAM, std::max(105.f, br->temp[l]));
         break;
       case T_ROCKET: {
         uint32_t cid = br->comp[l];
@@ -397,7 +409,8 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
         for (auto& c : cells) centre += worldPos(c);
         centre = centre / (float)cells.size();
         float E = cells.size() * MATS[CHARGE].explosive * litres;
-        for (auto& c : cells) removeCell(c);
+        // The explosive itself becomes the fireball: white-hot gas.
+        for (auto& c : cells) toGas(c, SMOKE, 2600.f);
         s.explode(centre, E, owner ? owner->id : -1);
         return;  // the volume may have changed shape under us; finish next tick
       }
@@ -417,24 +430,12 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
       for (int l = 0; l < BS3; l++) {
         if (!(br->flags[l] & F_BURN)) continue;
         int x = bx * 16 + (l & 15), z = bz * 16 + ((l >> 4) & 15), y = by * 16 + (l >> 8);
-        // Smoke into the air (soot-heavy for rubber and plastic).
-        if (s.airReady && rng().f() < 0.25f) {
-          bool sooty = br->mat[l] == RUBBER || br->mat[l] == PLASTIC;
-          s.air.addSmoke(worldPos({x, y, z}) + vec3(0, vs, 0), sooty ? 0.05f : 0.012f);
+        // Burning surfaces light their surroundings (and crackle).
+        if (s.fireSpots.size() < 64 && rng().f() < pEmit * 0.25f) {
+          bool open = v.mat(x, y + 1, z) == AIR || v.mat(x + 1, y, z) == AIR || v.mat(x - 1, y, z) == AIR ||
+                      v.mat(x, y, z + 1) == AIR || v.mat(x, y, z - 1) == AIR;
+          if (open) s.fireSpots.push_back(worldPos({x, y, z}) + vec3(0, vs * 2, 0));
         }
-        if (rng().f() > pEmit * 0.5f) continue;
-        bool open = v.mat(x, y + 1, z) == AIR || v.mat(x + 1, y, z) == AIR || v.mat(x - 1, y, z) == AIR ||
-                    v.mat(x, y, z + 1) == AIR || v.mat(x, y, z - 1) == AIR;
-        if (!open) continue;
-        vec3 wp = worldPos({x, y, z}) + vec3(0, vs * 0.5f, 0);
-        float fs = MATS[br->mat[l]].flameTemp / 850.f;
-        s.emit(FX_FIRE, wp + rng().unitVec() * vs * 0.4f, vec3(rng().range(-.1f, .1f), rng().range(0.3f, 0.9f), rng().range(-.1f, .1f)),
-               rng().range(0.35f, 0.8f), vs * rng().range(2.2f, 4.f) * fs);
-        if (rng().f() < 0.03f) {  // volumetric smoke from the air carries most of it
-          vec3 smokeCol = br->mat[l] == RUBBER || br->mat[l] == PLASTIC ? vec3(0.06f) : vec3(0.32f);
-          s.emit(FX_SMOKE, wp + vec3(0, vs * 3, 0), vec3(0, rng().range(0.3f, 0.6f), 0), rng().range(2.5f, 5.f), vs * 5, smokeCol);
-        }
-        if (rng().f() < 0.03f) s.emit(FX_EMBER, wp, vec3(rng().range(-.5f, .5f), rng().range(1, 2.5f), rng().range(-.5f, .5f)), rng().range(1, 2.5f), vs * 0.35f, vec3(3, 1.2f, 0.3f));
       }
     }
   }
@@ -443,6 +444,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
 void Sim::stepThermal(float dt) {
   int burning = 0, hot = 0;
   radiators.clear();
+  fireSpots.clear();
   simulateVolume(*this, world, worldHot, dt, nullptr, burning, hot);
   for (size_t i = 0; i < bodies.size(); i++) {
     Body* b = bodies[i].get();

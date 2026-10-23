@@ -82,7 +82,7 @@ both 0.025 m and 0.02 m voxels):
 | Workshop | Working | Place/paint/erase/wire, parts, materials, undo/redo, blueprints |
 | Content | Vertical slice | One yard scene, 8 assembly blueprints, ~50 materials, 9 tools |
 | UI | Working | Custom SDF UI, HUD, menus, target cards, title screen |
-| Renderer | Working (Windows/Linux GL) | Ray-marched smooth/blocky surfaces, shadows, bloom, volumetrics |
+| Renderer | Working (Windows/Linux GL) | Ray-marched voxels only (no smoothing, sprites or screen-space effects), per-voxel shadows and AO, gas voxels, bloom |
 | Persistence | Working (v1) | `.rsav` saves of world, bodies, parts, debris, water, air, player, salvage and jig; quicksave/quickload, autosave with fallback; exact round-trip by state hash |
 | Audio | **Windows only** | `waveOut`; `audio.cpp` returns false elsewhere |
 | Headless tests | Working | `--selftest`, no window/GL/X11; CTest and CI wired |
@@ -176,7 +176,8 @@ Sim::step(dt)
   stepDevices(dt)          # lights, heaters, motors, rockets, fuses, shorts
   stepPhysics(dt)          # substeps, contacts, impacts, heat from friction
   stepDebris(dt)           # ballistic debris, deposition into the world
-  stepFx(dtReal)           # fire/smoke/spark/steam particles
+  stepFlashes(dtReal)      # blast flashes (light only)
+  gas.step: every 1/30 s   # smoke/steam voxels: drift, cool, condense, soot (gas.cpp)
   thermal: every 1/20 s, dt * thermalWarp, early-out on empty hot sets
   fluids:  every 1/45 s
   electric: every 0.1 s
@@ -229,7 +230,8 @@ batches, explosion scans, air rows and radiant raycasts. Rules:
 
 1. **One voxel, one cell.** Material, flags, hp, aux, component, temperature
    and fuel live together in `Brick`; no side tables keyed by position for cell
-   state.
+   state. (The one exception is the gas layer, `GasLayer`, which holds smoke
+   and steam only where the world cell is air.)
 2. **World edits go through `Sim::setWorld`, `putWorld` or `removeWorld`.** They
    update specials, fluid activity, support seeds, hot sets and the air grid.
    Direct `world.set` is only for internal bulk operations that explicitly
@@ -277,6 +279,11 @@ batches, explosion scans, air rows and radiant raycasts. Rules:
     dependency-free build is a feature (single static `.exe`, easy CI).
 20. **Do not silently change the supported voxel range.** Content is authored
     at 2–2.5 cm; the UI, settings clamp and README must agree.
+21. **Matter is never created or destroyed by the simulation.** A voxel only
+    changes form (wood -> smoke/ash, water <-> steam, charge -> fireball gas,
+    anything broken -> debris -> deposited). `Sim::matterCount()` must not
+    change except by player tools; never delete a voxel to "clean up". Matter
+    may only leave through the world's open sides or top, and that is counted.
 
 ---
 
@@ -317,14 +324,46 @@ Target budgets for the reference laptop at 1080p, default world:
   by the `kSunVisCS` compute shader. A brick is re-marked only when its
   opaque density hash changes (`sunOccHash_`), not on glow-only uploads, and
   the bricks in its shadow are re-marked too. At most 256 bricks are
-  recomputed per frame. A change of sun direction or of smooth mode recomputes
-  everything. `REALISM_NO_SUNVIS=1` falls back to per-pixel shadow rays.
+  recomputed per frame. A change of sun direction recomputes everything. `REALISM_NO_SUNVIS=1` falls back to per-pixel shadow rays.
 - World brick uploads have a 3 ms CPU budget per frame (`updateWorld`).
 - Dynamic resolution (`Game::updateDynamicRes`) scales the render size every
   0.5 s in 0.05 steps against `target_fps`; it is off in scripted runs and the benchmark.
 - The world pass dominates (about 75% of GPU time on llvmpipe). Next candidates:
-  front-face body boxes with early depth, half-resolution volumetrics upsample
-  quality, and an upscaler (P8).
+  front-face body boxes with early depth, and an upscaler (P8).
+
+### Everything is a voxel; matter is conserved (after 2.3.0)
+
+- No smoothing: the density textures, isosurface refinement and the V toggle
+  are gone. Every hit is the face of the voxel the ray entered; AO is
+  Minecraft-style from the 8 voxels around the face (`voxelAO`), and world sun
+  shadows read `sunVis_` at the air voxel in front of the face (texelFetch), so
+  shadows fall in whole voxels. No FXAA, heat haze or volumetric pass.
+- There are no particles. `Sim::fx` is gone; `Sim::flashes` (light only) and
+  `Sim::fireSpots` / `gas.hot` feed point lights and the crackle loop.
+- **Invariant:** the simulation never creates or destroys a voxel.
+  `Sim::matterCount()` (world + bodies + debris + gas + what left through the
+  open sides/top) must stay constant; the self-test "fire, boiling and a blast
+  neither create nor destroy a voxel" checks it exactly. Player tools (build,
+  the hose, the wrench salvaging a part) are the only exception.
+- Gas (`src/sim/gas.*`): SMOKE and STEAM voxels live in a sparse per-brick layer
+  over the world grid, only where the world cell is AIR, so physics,
+  structure, tools and water never see them. `GasLayer::add` places at the
+  nearest free cell and never fails (a pending list retries). The step runs in
+  8 interleaved brick sets in parallel (bricks in one set never touch);
+  cross-brick moves, condensation and soot are applied serially. Cool bricks
+  step every 4th tick. Empty gas bricks are freed. Saved in the "GAS " section
+  (save format 2; format-1 saves load with no gas).
+- Forms: burnout -> hot SMOKE (70-85%) or the residue (ash); boil -> STEAM;
+  steam below 60 C -> water (`placeWater`); cool smoke touching a surface ->
+  ASH (soot); a charge's voxels -> 2600 C smoke (the fireball); rocket
+  propellant -> exhaust smoke at a steady rate; blasts, cracks and chiselling
+  always make debris; debris whose time runs out is deposited
+  (`depositVoxel`), and over the 30k cap lands immediately.
+- The renderer writes gas into the world texture where the world is air
+  (`uploadWorldBrick`); the shader's gas branch (`uMatB.w`) absorbs/scatters
+  over the ray length inside each voxel and adds blackbody glow from its
+  temperature.
+- Script command `ignite x y z r fuel` sets voxels burning (for tests and screenshots).
 - Startup to interactive title ≤ 5 s on the reference machine.
 
 The project currently allocates a `sizeof(Brick)` (~160 KB) brick whenever a
@@ -883,7 +922,7 @@ These rules keep parts behaving at every supported voxel size:
 | `REALISM_DEBUG_CONTACTS=1` | Contact dump |
 | `REALISM_DEBUG_WIRE=1` | Wire-route failure endpoints |
 | `F3` in game | Live system timings and counts |
-| `--script` commands | `pos`, `wait`, `tool`, `press`, `click`, `holdclick`, `release`, `mouse`, `shot`, `title`, `menu`, `workshop`, `play`, `blueprint`, `launch`, `explode`, `toggle`, `switch`, `smooth`, `log`, `probe`, `quit` |
+| `--script` commands | `pos`, `wait`, `tool`, `press`, `click`, `holdclick`, `release`, `mouse`, `shot`, `title`, `menu`, `workshop`, `play`, `blueprint`, `launch`, `explode`, `toggle`, `switch`, `ignite`, `log`, `probe`, `quit` |
 
 Use `log` and `probe` when reproducing physics/air bugs; they are the only
 non-visual observability in the windowed build today.
@@ -972,7 +1011,7 @@ toughness, burnPower and the current voxel volume in `initMaterials`.
 ## Appendix C — controls
 
 Movement WASD/Space/Shift/Ctrl, mouse look, E use, F flashlight, N fly, T slow
-motion, P pause, V smooth/blocky, Tab workshop, F1 help, F2 HUD, F3 stats,
+motion, P pause, Tab workshop, F1 help, F2 HUD, F3 stats,
 F11 fullscreen, Esc menu, 1–9 tools, G detonate remotes, Q build material,
 Z build size, X salvaged part, R/F rotate parts in workshop, M mirror,
 Ctrl+Z/Y workshop undo/redo, 1–5 workshop tools (place/erase/paint/pick/wire),

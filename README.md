@@ -27,6 +27,13 @@ The world uses **2.5 cm voxels** (64 voxels per litre). It is about 16 m × 16 m
   - Weaker hits chip a crater.
   - Brittle materials (glass, brick, stone, concrete) **crack** along Voronoi lines into chunks.
 
+**Matter: nothing is created or destroyed**
+- Every voxel stays a voxel; it only changes form. Wood burns into hot smoke (the flame is that smoke, glowing until it cools) and some ash. Water boils into steam voxels, and steam condenses back into water as it cools. Cool smoke that touches a surface settles out as soot (ash).
+- A charge's own voxels become its fireball, and everything a blast breaks is thrown as fragments that land somewhere. A rocket burns its propellant voxels away as exhaust.
+- Smoke and steam are gas voxels: they ride the simulated air, rise while hot, wander as they mix, and are blocked by walls, so they fill a room or leave through its doorway. Anything that moves into a gas voxel's cell pushes it aside.
+- The only way out is through the open sides or top of the simulated world, and that is counted: **F3** shows the total matter and how much has left. The self-test checks the total stays exact through fire, boiling and a blast.
+- Light is not matter, so a blast's flash and the blowtorch's flame are light only. Player tools (building, the hose's supply) are the one way to add or take away matter.
+
 **Structure: nothing floats**
 - Every voxel has weight, and only its neighbours hold it up: the voxel it rests on, the voxels it is bonded to beside it, or the one it hangs from.
 - Every face between two voxels is a bond with a real strength. Inside one part it is the material's own tensile strength (soil ~15 kPa, brick 3 MPa, oak 50 MPa, steel 400 MPa). Between parts it is their joint: mortar, nails, screws, glue, bolts, a weld. Loose rubble and parts that merely rest carry nothing sideways or in tension, so they can only lie on what is under them.
@@ -40,7 +47,7 @@ The world uses **2.5 cm voxels** (64 voxels per litre). It is about 16 m × 16 m
 - Touching bodies exchange heat, and sliding friction warms both surfaces.
 
 **Air**
-- The whole world's air is simulated as a fluid on a 20 cm grid: velocity, temperature, smoke and steam.
+- The whole world's air is simulated as a fluid on a 20 cm grid: velocity and temperature. Smoke and steam are voxels carried by it.
 - Hot air rises, flows around walls and through doorways, and a gusty breeze blows in from the open sides.
 - Fans and propellers push real airflow, rockets blast exhaust, and explosions send out a pressure wave.
 - Surfaces trade heat with the air touching them, so a fire's plume heats whatever it drifts over, and wind cools hot metal faster.
@@ -51,19 +58,19 @@ The world uses **2.5 cm voxels** (64 voxels per litre). It is about 16 m × 16 m
 
 **Fire**
 - Flammable materials ignite at their real ignition temperatures.
-- Fire needs an exposed face for oxygen, burns through its fuel, releases heat, and leaves ash.
+- Fire needs an exposed face for oxygen, burns through its fuel and releases heat. Each burnt-out voxel becomes hot smoke or ash.
 - Hot plumes rise and set alight things hanging above, and water puts fires out.
 
 **Phase changes**
 - Metals, glass and plastics melt into glowing liquid that flows and freezes back.
-- Sand fuses into glass and water boils off.
+- Sand fuses into glass, and water boils into steam that condenses back into water.
 
 **Water**
 - Water is whole voxels, like everything else, and is drawn as the voxels it is: no special surface, no shader waves.
 - A water voxel with nothing under it free-falls; at an edge it pours over.
 - Pressure acts on each connected body of water: voxels move from its highest surface to its lowest open cells, so heaps spread, ponds find one level and water in connected containers stands at the same height.
 - An opening well below the surface jets: water leaves at Torricelli's speed, √(2gh), as many voxels per second as the hole passes.
-- Water is conserved exactly, voxel for voxel: nothing evaporates into thin air except by boiling.
+- Water is conserved exactly, voxel for voxel: boiling turns it into steam voxels, which turn back into water as they cool.
 - Currents carry floating things along. Bodies float or sink by buoyancy.
 
 **Other fluids** — molten material, sand, ash and gravel flow and slump on the grid.
@@ -108,7 +115,6 @@ Heat runs 20× faster than real time by default (`thermal_warp`), so fires and f
 | N | Fly mode |
 | T | Slow motion |
 | P | Pause |
-| V | Smooth or blocky surfaces |
 | Tab | Workshop |
 | F1 | Help |
 | F3 | Performance stats |
@@ -142,9 +148,9 @@ The whole world is saved: every voxel's material, temperature, damage and burn s
 - Saves live in `saves/` under the user data folder (`%APPDATA%\Realism\saves` on Windows). A default-world save is about 9–11 MB.
 - Files are written to a temporary name, flushed to disk and then renamed, so a crash or power cut mid-save can't damage an existing save. Each file carries a checksum: a damaged, truncated or newer-format save is refused with a message, and the world you're in is left alone.
 
-## Smooth voxels
+## Everything is a voxel
 
-Surfaces are ray-marched on the GPU, so the cost scales with screen pixels rather than voxel count. Each volume also has a linearly filtered density field. Rays refine onto its 0.5 isosurface, and normals come from its gradient, so curves and edges render smooth while the simulation stays voxel-exact. Press **V** to compare with blocky voxels.
+Surfaces are ray-marched on the GPU, so the cost scales with screen pixels rather than voxel count. What you see is exactly the simulation's voxels: every surface is a voxel face, shadows fall in whole voxels, and corners are darkened by the voxels around them. There are no particle sprites, smoothing or screen-space effects. Smoke and steam are semi-transparent voxels that absorb and scatter light over exactly the length of view ray inside each one, and hot gas glows by its temperature, so a flame is a cluster of glowing gas voxels. Loose fragments in flight are drawn on the grid, where a voxel there would be.
 
 ## Building
 
@@ -197,11 +203,11 @@ Values outside the supported ranges are clamped at start-up, so a typo cannot ha
 | `dynamic_resolution`, `target_fps` | on, 60 | While the GPU can't hold `target_fps`, render below `render_scale` (down to 0.5× of the window), then climb back. Also in the in-game settings. |
 | `thermal_warp` | 20 | How much faster heat runs than real time. |
 | `threads` | 0 | 0 uses every hardware thread. |
-| `smooth_surfaces`, `shadows`, `bloom`, `volumetrics` | on | Also in the in-game settings. `volumetrics` is the ray-marched smoke, steam and heat haze. |
+| `shadows`, `bloom` | on | Also in the in-game settings. |
 
 The defaults target a 6-core/12-thread laptop CPU (e.g. i7-10750H) with an 8 GB GPU:
 - About 330 MB of system RAM for the world.
-- About 850 MB of VRAM for its 3D textures (about 1.6 GB at 0.02 m), well inside an 8 GB card such as an RTX 3070.
+- About 700 MB of VRAM for its 3D textures (about 1.3 GB at 0.02 m), well inside an 8 GB card such as an RTX 3070.
 - Heat, contact generation, explosions and circuits run across all threads.
 
 **F3** shows live timings, including GPU time per render pass, the current render resolution and, on NVIDIA, VRAM in use.

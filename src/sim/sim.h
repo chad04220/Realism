@@ -10,6 +10,7 @@
 #include "comps.h"
 #include "volume.h"
 #include "air.h"
+#include "gas.h"
 
 namespace save { struct Access; }
 
@@ -24,12 +25,10 @@ struct Debris {          // a single loose voxel in flight
   float fill = 1;        // unused: water is whole voxels (kept for the save format)
 };
 
-enum FxKind : uint8_t { FX_FIRE, FX_SMOKE, FX_SPARK, FX_STEAM, FX_DUST, FX_FLASH, FX_SPRAY, FX_EMBER };
-struct Fx {
-  vec3 p, v;
-  float life, maxLife, size;
-  vec3 color;
-  FxKind kind;
+// A blast's flash: light only (light is not matter, so it is not a voxel).
+struct Flash {
+  vec3 p;
+  float life, maxLife;
 };
 
 enum EventKind : uint8_t { EV_IMPACT, EV_BREAK, EV_DETACH, EV_EXPLODE, EV_IGNITE, EV_SHATTER, EV_TOGGLE, EV_SHORT, EV_MELT, EV_SPLASH };
@@ -74,7 +73,9 @@ class Sim {
   HotSet worldHot;
   std::vector<std::unique_ptr<Body>> bodies;
   std::vector<Debris> debris;
-  std::vector<Fx> fx;
+  GasLayer gas;                    // smoke and steam voxels
+  std::vector<Flash> flashes;
+  std::vector<vec3> fireSpots;     // a sample of burning surfaces this thermal tick (firelight, crackle)
   std::vector<SimEvent> events;
   std::unordered_set<int64_t> fluidActive;
   std::vector<int64_t> supportSeeds;
@@ -88,7 +89,7 @@ class Sim {
   // Live statistics for the HUD.
   struct {
     int burning = 0, hot = 0, awake = 0, contacts = 0, poweredDevices = 0, circuits = 0;
-    float thermalMs = 0, physicsMs = 0, fluidMs = 0, electricMs = 0, structureMs = 0;
+    float thermalMs = 0, physicsMs = 0, fluidMs = 0, electricMs = 0, structureMs = 0, gasMs = 0;
     int collapses = 0;          // structural failures since the world began
     long bondsFailed = 0;       // bonds that broke under load (not pieces merely cut off)
     double heatJ = 0;
@@ -131,9 +132,9 @@ class Sim {
   void addHeat(const Hit& h, float watts, float dt, float radiusVoxels);
   void spray(const vec3& p, const vec3& v, uint8_t mat, int count);
 
-  // Effects.
-  void emit(FxKind k, const vec3& p, const vec3& v, float life, float size, const vec3& color = vec3(1));
   void spawnDebris(const vec3& p, const vec3& v, const Cell& c);
+  bool depositVoxel(ivec3 c, const Cell& cell);   // land a loose voxel at/near c in the world
+  long debrisEscaped = 0;                         // debris that flew out through the world's open sides
   void event(EventKind k, const vec3& p, float e, uint8_t m = 0, uint32_t comp = 0) { if (events.size() < 512) events.push_back({k, p, e, m, comp}); }
 
   // Helpers.
@@ -155,7 +156,11 @@ class Sim {
   void stepElectric(float dt);
   void stepDevices(float dt);
   void stepDebris(float dt);
-  void stepFx(float dt);
+  void stepFlashes(float dt);
+  // Every voxel the simulation holds: world, bodies, debris and gas, plus
+  // what has left through the world's open sides. Constant unless the player
+  // builds or removes something: matter only changes form.
+  size_t matterCount() const;
   void processSupport();               // structure.cpp: load paths, overloaded bonds break
   // Every hanging voxel in the world (after building a scene). apply=false
   // only records the loads for later local checks (after loading a save).
@@ -209,7 +214,7 @@ class Sim {
       for (size_t i = 0; i < ok.size(); i++) if (ok[i] != EMPTY) put(ok[i], ov[i]);
     }
   } loadState_;
-  float thermalAcc_ = 0, fluidAcc_ = 0, electricAcc_ = 0, airAcc_ = 0;
+  float thermalAcc_ = 0, fluidAcc_ = 0, electricAcc_ = 0, airAcc_ = 0, gasAcc_ = 0;
   void airCoupling(float dt);
 };
 

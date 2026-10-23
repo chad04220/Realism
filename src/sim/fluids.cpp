@@ -367,14 +367,10 @@ void Sim::stepDebris(float dt) {
       bool liquidDeb = isLiquid(d.mat);
       if (d.mat == WATER && m == WATER) {
         // A falling water voxel landing in water joins it at its surface.
-        placeWater(c, d.temp);
-        if (rng().f() < 0.05f && length(d.v) > 2) emit(FX_SPRAY, np, vec3(0, 1.0f, 0) + rng().unitVec() * 0.4f, 0.4f, vs);
-        d = debris.back(); debris.pop_back();
-        continue;
+        if (placeWater(c, d.temp)) { d = debris.back(); debris.pop_back(); continue; }
       }
       if (m != AIR && isLiquid(m) && !liquidDeb) {
         d.v *= (1 - 4 * dt);  // splash and sink
-        if (rng().f() < 0.02f) emit(FX_SPRAY, np, vec3(0, 1.2f, 0), 0.4f, vs);
       }
       if (solidHit) {
         // Water hitting something hot or burning cools it and may flash to steam.
@@ -398,8 +394,10 @@ void Sim::stepDebris(float dt) {
                 nb->temp[nl] = std::max(AMBIENT, nb->temp[nl] - 0.3f * absorb / std::max(1e-6f, MATS[nb->mat[nl]].heatCap));
               }
               worldHot.add(world.bindex(c.x, c.y, c.z));
-              if (rng().f() < 0.3f) emit(FX_STEAM, d.p, vec3(0, 0.8f, 0), 1.5f, vs * 4);
+              // The water itself flashes to steam.
+              gas.add(*this, cellOf(d.p), STEAM, 105.f);
               kill = true;
+              d.mat = AIR;  // now gas: nothing left to deposit
             }
           }
         }
@@ -420,41 +418,69 @@ void Sim::stepDebris(float dt) {
             float e = MATS[d.mat].restitution * 0.8f + 0.1f;
             d.v = (d.v - n * vn) * 0.6f - n * vn * e;
             d.bounces++;
-            if (speed > 4 && rng().f() < 0.15f && MATS[d.mat].metal > 0.5f) emit(FX_SPARK, d.p, d.v * 0.3f + rng().unitVec(), 0.3f, vs * 0.5f, vec3(3, 2, 1));
           }
         }
       } else {
         d.p = np;
       }
     }
-    // Water is never lost: a voxel whose time runs out lands where it is.
-    if (kill && !deposit && d.mat == WATER && d.life <= 0) { kill = false; deposit = true; }
+    // Nothing is ever lost: a voxel whose time in flight runs out lands where
+    // it is, unless it has flown out through the open side or top of the world.
+    if (kill && !deposit && d.mat != AIR && d.life <= 0) {
+      ivec3 c = cellOf(d.p);
+      if (c.x < 0 || c.z < 0 || c.x >= world.nx || c.z >= world.nz || c.y >= world.ny) debrisEscaped++;
+      else { kill = false; deposit = true; }
+    }
     if (deposit && d.mat == WATER) {
       ivec3 c = cellOf(d.p);
-      placeWater(c, d.temp);
-      kill = true;
       deposit = false;
+      if (!placeWater(c, d.temp)) { d.life = 0.5f; d.p.y += vs; i++; continue; }
+      kill = true;
     }
     if (deposit) {
       // Settle into the nearest free cell at or above where it landed.
       ivec3 c = cellOf(d.p);
-      bool placed = false;
-      for (int up = 0; up < 4 && !placed; up++) {
-        ivec3 q(c.x, c.y + up, c.z);
-        if (world.inb(q.x, q.y, q.z) && world.matI(q) == AIR) {
-          Cell cell;
-          cell.mat = d.mat; cell.temp = d.temp; cell.comp = d.comp; cell.aux = d.aux;
-          // A lone fragment is loose rubble: no longer part of its original part.
-          if (cell.comp && comp(cell.comp).type != C_TERRAIN) cell.comp = 0;
-          cell.hp = 200;
-          putWorld(q.x, q.y, q.z, cell);
-          if (isFluidish(d.mat)) fluidActive.insert(packKey(q.x, q.y, q.z));
-          placed = true;
-        }
-      }
+      Cell cell;
+      cell.mat = d.mat; cell.temp = d.temp; cell.comp = d.comp; cell.aux = d.aux;
+      // A lone fragment is loose rubble: no longer part of its original part.
+      if (cell.comp && comp(cell.comp).type != C_TERRAIN) cell.comp = 0;
+      cell.hp = 200;
+      // Nowhere to land yet (buried in a pile): keep it in flight a little longer.
+      if (!depositVoxel(c, cell)) { d.life = 0.5f; d.v = vec3(0, 1, 0); d.p.y += vs; i++; continue; }
       kill = true;
     }
     if (kill) { d = debris.back(); debris.pop_back(); continue; }
     i++;
   }
+}
+
+// Put a loose voxel into the world at c, or the nearest open cell to it
+// (searching upwards first), so that landing never loses it.
+bool Sim::depositVoxel(ivec3 c, const Cell& cell) {
+  c.x = std::clamp(c.x, 0, world.nx - 1);
+  c.y = std::clamp(c.y, 0, world.ny - 1);
+  c.z = std::clamp(c.z, 0, world.nz - 1);
+  auto open = [&](int x, int y, int z) { return world.inb(x, y, z) && world.mat(x, y, z) == AIR; };
+  ivec3 at;
+  bool found = false;
+  for (int up = 0; up < 4 && !found; up++)
+    if (open(c.x, c.y + up, c.z)) { at = ivec3(c.x, c.y + up, c.z); found = true; }
+  for (int r = 1; r <= 10 && !found; r++) {
+    int best = INT32_MAX;
+    for (int dy = r; dy >= -r; dy--)
+      for (int dz = -r; dz <= r; dz++)
+        for (int dx = -r; dx <= r; dx++) {
+          if (std::max(std::abs(dx), std::max(std::abs(dy), std::abs(dz))) != r) continue;
+          int d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 >= best || !open(c.x + dx, c.y + dy, c.z + dz)) continue;
+          best = d2;
+          at = ivec3(c.x + dx, c.y + dy, c.z + dz);
+        }
+    found = best != INT32_MAX;
+  }
+  if (!found) return false;
+  if (cell.mat == WATER) return placeWater(at, cell.temp);
+  putWorld(at.x, at.y, at.z, cell);
+  if (isFluidish(cell.mat)) fluidActive.insert(packKey(at.x, at.y, at.z));
+  return true;
 }

@@ -220,7 +220,6 @@ void Sim::stepDevices(float dt) {
       if (!br->mat[l]) continue;
       br->temp[l] += per / MATS[br->mat[l]].heatCap;
       if (b) b->heat.add(v.bindex(c.x, c.y, c.z)); else worldHot.add(v.bindex(c.x, c.y, c.z));
-      if (rng().f() < 0.002f) emit(FX_SPARK, b ? b->toWorld(vec3(c.x + .5f, c.y + .5f, c.z + .5f), vs) : cellCenter(c.x, c.y, c.z), rng().unitVec() * 2.f, 0.3f, vs * 0.4f, vec3(3, 2.5f, 1.5f));
     }
   }
 
@@ -355,11 +354,29 @@ void Sim::stepDevices(float dt) {
       if (airReady) {
         air.driveTowards(tail - axisW * 0.25f, axisW * -30.f, 0.15f, std::min(1.f, dt * 10));
         air.addHeat(tail - axisW * 0.2f, 40000.f * dt);
-        air.addSmoke(tail - axisW * 0.3f, 0.8f * dt * 10);
       }
-      for (int i = 0; i < 6; i++)
-        emit(FX_FIRE, tail + rng().unitVec() * vs, axisW * -rng().range(4, 9) + rng().unitVec() * 0.6f, rng().range(0.15f, 0.35f), vs * rng().range(2, 4), vec3(1.4f, 1.1f, 0.8f));
-      emit(FX_SMOKE, tail, axisW * -2.f + rng().unitVec() * 0.4f, rng().range(2, 4), vs * 6, vec3(0.7f));
+      // The exhaust is the propellant itself: it burns away at a steady rate
+      // (the last voxel goes as the fuel runs out), each one leaving the
+      // nozzle as white-hot gas.
+      {
+        std::vector<std::pair<float, ivec3>> prop;
+        vec3 ax = normalize(c.axis);
+        b.vol.forEach([&](int x, int y, int z, Brick* br, int l) {
+          if (br->comp[l] == cid && br->mat[l] == PROPELLANT) prop.push_back({dot(vec3((float)x, (float)y, (float)z), ax), ivec3(x, y, z)});
+        });
+        float due = prop.size() * std::min(1.f, dt / std::max(dt, c.fuel + dt)) + c.exhaustCarry;
+        int n = std::min((int)prop.size(), (int)due);
+        c.exhaustCarry = due - n;
+        if (c.fuel <= 0) n = (int)prop.size();
+        // Nozzle end first.
+        std::partial_sort(prop.begin(), prop.begin() + n, prop.end(), [](auto& a, auto& b2) { return a.first < b2.first; });
+        for (int k = 0; k < n; k++) {
+          ivec3 q = prop[k].second;
+          b.vol.set(q.x, q.y, q.z, AIR);
+          gas.add(*this, cellOf(tail - axisW * vs * 2.f), SMOKE, 1800.f);
+        }
+        if (n) { b.shapeDirty = true; b.splitCheck = true; }
+      }
       // The exhaust heats whatever it hits.
       Hit h = raycast(tail, axisW * -1.f, 0.8f, bodyIndex(&b));
       if (h.hit) addHeat(h, 9000.f, dt, 2.5f);

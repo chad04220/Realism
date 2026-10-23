@@ -130,16 +130,15 @@ void Sim::fracture(Volume& v, const vec3& c, float R, int nseeds, Body* owner) {
       }
   for (auto& p : cracks) {
     if (owner) {
+      // A crack's voxels crumble out as loose fragments.
       Cell cc = v.get(p.x, p.y, p.z);
-      if (rng().f() < 0.3f) {
-        vec3 wp = owner->toWorld(vec3(p.x + 0.5f, p.y + 0.5f, p.z + 0.5f), vs);
-        spawnDebris(wp, owner->pointVel(wp) + rng().unitVec() * 0.5f, cc);
-      }
+      vec3 wp = owner->toWorld(vec3(p.x + 0.5f, p.y + 0.5f, p.z + 0.5f), vs);
+      spawnDebris(wp, owner->pointVel(wp) + rng().unitVec() * 0.5f, cc);
       owner->vol.set(p.x, p.y, p.z, AIR);
       owner->shapeDirty = true;
       owner->splitCheck = true;
     } else {
-      removeWorld(p.x, p.y, p.z, rng().f() < 0.3f, rng().unitVec() * 0.5f);
+      removeWorld(p.x, p.y, p.z, true, rng().unitVec() * 0.5f);
     }
   }
 }
@@ -161,15 +160,9 @@ void Sim::explode(const vec3& p, float E, int sourceBody) {
   float R = std::min(4.0f, std::cbrt(K * E * VV / (4.18879f * weakest)));
   int Rv = (int)std::ceil(R / vs);
   ivec3 pc = cellOf(p);
-  // Fireball and debris cloud scaled to the blast.
-  float fs = std::cbrt(E / 50000.f);
-  emit(FX_FLASH, p, vec3(0), 0.2f, 0.4f * fs, vec3(2.5f, 1.9f, 1.2f));
-  for (int i = 0; i < 140; i++) {
-    vec3 d = rng().unitVec();
-    emit(FX_FIRE, p + d * rng().range(0, 0.15f * fs), d * rng().range(1.5f, 6) * fs, rng().range(0.25f, 0.7f), vs * rng().range(3, 7) * fs);
-    emit(FX_SMOKE, p + d * rng().range(0, 0.3f * fs), d * rng().range(0.5f, 2.5f) * fs + vec3(0, 1, 0), rng().range(2.5f, 6), vs * rng().range(6, 12) * fs, vec3(0.22f));
-    if (i % 2 == 0) emit(FX_SPARK, p, d * rng().range(5, 18), rng().range(0.4f, 1.2f), vs * 0.5f, vec3(3, 1.6f, 0.5f));
-  }
+  // The flash is light only; the fireball is the charge's own matter, now
+  // white-hot gas (thermal.cpp), and the debris cloud is what the blast breaks.
+  if (flashes.size() < 16) flashes.push_back({p, 0.2f, 0.2f});
   // World: gather candidates in parallel.
   struct Cand { ivec3 c; float d; float e; };
   std::vector<Cand> cands;
@@ -224,12 +217,8 @@ void Sim::explode(const vec3& p, float E, int sourceBody) {
     float tough = std::max(1e-3f, MATS[m].tough);
     vec3 dir = normalize(cellCenter(c.c.x, c.c.y, c.c.z) - p);
     float sp = std::min(26.f, std::sqrt(2 * (c.e - tough * 0.5f) / std::max(1e-5f, MATS[m].voxMass)) * 0.3f);
-    bool deb = c.e < tough * 8 || rng().f() < 0.03f;
-    if (deb) removeWorld(c.c.x, c.c.y, c.c.z, true, dir * sp + rng().unitVec() * sp * 0.25f);
-    else {
-      if (rng().f() < 0.015f) emit(FX_DUST, cellCenter(c.c.x, c.c.y, c.c.z), dir * sp * 0.15f, rng().range(1.5f, 3.f), vs * 6, matLinear(m));
-      removeWorld(c.c.x, c.c.y, c.c.z, false);
-    }
+    // Everything the blast breaks is thrown, however finely it is broken.
+    removeWorld(c.c.x, c.c.y, c.c.z, true, dir * sp + rng().unitVec() * sp * 0.25f);
     removed++;
   }
   // Survivors near the blast get cracked, damaged and heated.
@@ -291,7 +280,7 @@ void Sim::explode(const vec3& p, float E, int sourceBody) {
     for (auto& k : kill) {
       Cell cc = b.vol.get(k.x, k.y, k.z);
       vec3 wp = b.toWorld(vec3(k.x + 0.5f, k.y + 0.5f, k.z + 0.5f), vs);
-      if (rng().f() < 0.35f) spawnDebris(wp, b.pointVel(wp) + normalize(wp - p) * rng().range(4, 14), cc);
+      spawnDebris(wp, b.pointVel(wp) + normalize(wp - p) * rng().range(4, 14), cc);
       b.vol.set(k.x, k.y, k.z, AIR);
     }
     if (!kill.empty()) { b.shapeDirty = true; b.splitCheck = true; }
