@@ -26,7 +26,7 @@ void initMaterials(float vs) {
     m.melt = 1215; m.solidifyTo = BASALT; m.pattern = P_STONE; m.friction = 0.7f; }
   { auto& m = def(DIRT, "Soil", 0x6f4b2e, 1500, 1000, 0.5f, 20, "Packed earth: clay, silt and organic matter."); m.friction = 0.8f; }
   { auto& m = def(GRASS, "Turf", 0x4a8a30, 1300, 1100, 0.4f, 15, "Grass roots binding the topsoil. The blades burn off to bare soil.");
-    flammable(m, 340, 50, 700, DIRT, 650); m.pattern = P_GRASS; }
+    flammable(m, 340, 50, 700, DIRT, 650); m.pattern = P_GRASS; m.moisture = 0.6f; }
   { auto& m = def(SAND, "Sand", 0xc9ae78, 1600, 830, 0.3f, 2, "Loose quartz grains. Melt it hot enough and it becomes glass.");
     m.phase = POWDER; m.melt = 1700; m.solidifyTo = GLASS; }
   { auto& m = def(WATER, "Water", 0x2f6fb8, 1000, 4186, 0.6f, 0, "Huge heat capacity: the best fire extinguisher there is.");
@@ -36,7 +36,7 @@ void initMaterials(float vs) {
   { auto& m = def(PINE, "Pine plank", 0xd2a86e, 450, 1700, 0.12f, 150, "Light softwood. Nailed planks pop off under a good hit.");
     flammable(m, 280, 600, 2200, ASH); m.pattern = P_WOOD; }
   { auto& m = def(LEAVES, "Leaves", 0x3f8f35, 40, 2000, 0.1f, 3, "Thin and airy: a voxel of foliage is mostly air.");
-    flammable(m, 260, 40, 1600, AIR, 700); m.pattern = P_LEAF; }
+    flammable(m, 260, 40, 1600, AIR, 700); m.pattern = P_LEAF; m.moisture = 0.5f; }
   { auto& m = def(BRICK, "Fired clay brick", 0xa84a33, 1900, 840, 0.7f, 150, "Strong in compression. The mortar joints give way first.");
     m.pattern = P_BRICK; m.friction = 0.75f; }
   { auto& m = def(MORTAR, "Lime mortar", 0xcfc6b4, 1700, 840, 0.6f, 15, "Weak lime-sand mortar holding the bricks together."); m.friction = 0.7f; }

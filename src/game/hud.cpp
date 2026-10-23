@@ -1037,6 +1037,38 @@ bool Game::selftest() {
               sim.world.countSolid() == 0,
           "Sim::init clears every per-run system");
   }
+  // A fire heats what is near it, not the whole yard: radiant heat spreads
+  // out and fades with distance, and green turf and leaves must be dried
+  // before they burn. After 40 s of the scene's campfire and stove burning,
+  // nothing more than 1.5 m from either may be alight.
+  {
+    resetWorld();  // a fresh yard: the tests above have blown holes in this one
+    const vec3 fires[2] = {vec3(7.6f, 1.0f, 9.4f), vec3(6.0f, 1.2f, 4.9f)};  // campfire, shed stove
+    for (int i = 0; i < 2400; i++) sim.step(1.f / 60.f);
+    int near = 0, far = 0;
+    std::string what;
+    auto tally = [&](const Volume& v, Body* b) {
+      v.forEach([&](int x, int y, int z, Brick* br, int l) {
+        if (!(br->flags[l] & F_BURN)) return;
+        vec3 lc(x + 0.5f, y + 0.5f, z + 0.5f);
+        vec3 p = b ? b->toWorld(lc, sim.vs) : lc * sim.vs;
+        float d = 1e9f;
+        for (auto& f : fires) d = std::min(d, length(vec3(p.x - f.x, 0, p.z - f.z)));
+        if (d < 1.5f) { near++; return; }
+        far++;
+        if (far <= 4) {
+          char b2[96];
+          snprintf(b2, sizeof b2, " %s at (%.2f %.2f %.2f) %.2f m", MATS[br->mat[l]].name, p.x, p.y, p.z, d);
+          what += b2;
+        }
+      });
+    };
+    tally(sim.world, nullptr);
+    for (auto& b : sim.bodies) if (!b->ghost && !b->viewmodel) tally(b->vol, b.get());
+    fprintf(stderr, "  after 40 s: %d voxels burning within 1.5 m of the fires, %d further out%s\n", near, far, what.c_str());
+    check(near > 0, "the campfire and stove are still burning after 40 s");
+    check(far == 0, "a fire doesn't set things alight beyond 1.5 m");
+  }
   fprintf(stderr, "%d failure(s)\n", fails);
   return fails == 0;
 }

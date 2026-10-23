@@ -151,6 +151,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
         float Tk = T + 273.15f;
         float vAir = 0;
         int airCell = -1;
+        float radOut = 0;  // W radiated from the open faces (the same power the rays carry off)
         if (airFaces) {
           float Tair = AMBIENT;
           if (s.airReady) {
@@ -165,7 +166,14 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
           }
           float hc = 10.f + 6.f * std::min(vAir, 10.f);
           float conv = airFaces * A * hc * (Tair - T);
-          extra += conv + airFaces * A * EMISS * SIGMA * (Tamb4 - Tk * Tk * Tk * Tk);
+          // A voxel radiates exactly what it loses, and never more than the heat
+          // it holds above its surroundings this step (a thermal step is long:
+          // radiating more than that and then being held at its surroundings'
+          // temperature would make energy from nothing, and a light, very hot
+          // voxel would keep a fire running away to the temperature cap).
+          radOut = airFaces * A * EMISS * SIGMA * (Tk * Tk * Tk * Tk - Tamb4);
+          if (radOut > 0) radOut = std::min(radOut, C * std::max(0.f, T - Tlo) / dt);
+          extra += conv - radOut;
           if (airCell >= 0 && std::fabs(conv) > 1e-3f) airHeat.push_back({airCell, -conv * dt / s.cfg.thermalWarp});
         }
         // Combustion.
@@ -184,8 +192,8 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
         }
         // Hot surfaces and flames shine heat across the open air (rays cast later).
         if (airFaces && (T > 180 || (fl & F_BURN))) {
-          float W = airFaces * A * EMISS * SIGMA * (Tk * Tk * Tk * Tk - Tamb4);
-          if (fl & F_BURN) W += 0.25f * M.power;
+          float W = radOut;
+          if (fl & F_BURN) W += 0.25f * M.power;  // the flame's own glow
           if (W > 0 && length2(nrm) > 0) {
             vec3 lp(x + 0.5f, y + 0.5f, z + 0.5f), n = normalize(nrm);
             Radiator r;
@@ -198,6 +206,7 @@ static void simulateVolume(Sim& s, Volume& v, HotSet& hs, float dt, Body* owner,
         }
         // Point-implicit update: unconditionally stable for conduction.
         float Tnew = (T + dt / C * (sumGT + extra)) / (1 + dt / C * sumG);
+        if (M.moisture > 0) Tnew = heatWithLatent(M, T, C * (Tnew - T));
         // Radiation/convection can't push past ambient in one step.
         if ((T > AMBIENT && Tnew < AMBIENT && sumG == 0) || (T < AMBIENT && Tnew > AMBIENT && sumG == 0)) Tnew = AMBIENT;
         // Radiation is applied explicitly; in a voxel with little heat capacity
@@ -470,7 +479,7 @@ void Sim::radiate(float dt) {
   double total = 0;
   for (auto& r : radiators) total += r.W;
   radiantTotal = (float)total;
-  const int rays = 320;
+  const int rays = 640;
   const float Eray = (float)(total * dt / rays);
   // Systematic sampling along the cumulative power gives a low-variance pick.
   struct Ray { vec3 o, d; int body; };
@@ -492,25 +501,59 @@ void Sim::radiate(float dt) {
   Jobs::get().parallelFor(rays, 16, [&](int k0, int k1, int) {
     for (int k = k0; k < k1; k++) hitv[k] = raycast(rs[k].o, rs[k].d, 6.f);
   });
-  std::vector<std::pair<Hit, float>> hits;
+  // Each ray stands for the power leaving through its share of the
+  // hemisphere, so the patch it lands on grows with the square of the
+  // distance: spread its energy over that patch instead of dumping it into
+  // one voxel (one lump from a big fire would set a single leaf 5 m away
+  // alight). Air and smoke absorb some on the way. Whatever doesn't land on
+  // a nearby surface spreads out into the wider surroundings, where it warms
+  // nothing noticeably (air itself barely absorbs thermal radiation).
+  const float solidAngle = 2 * PI / rays;
+  const float faceA = vs * vs;
+  const float absorbLen = 3.f;  // metres: the fraction reaching a surface falls as exp(-d / 3 m)
+  const int maxR = 4;           // voxels: widest patch spread over (about 1.3 m out)
   for (int k = 0; k < rays; k++) {
     const Hit& h = hitv[k];
     if (!h.hit) continue;
     if (h.body >= 0 && bodies[h.body]->id == rs[k].body && h.t < vs * 0.5f) continue;
-    hits.push_back({h, Eray});
-  }
-  for (auto& [h, E] : hits) {
     Body* B = h.body >= 0 ? bodies[h.body].get() : nullptr;
     Volume& v = B ? B->vol : world;
-    Brick* br = v.brick(h.cell.x, h.cell.y, h.cell.z);
-    if (!br) continue;
-    int l = lidx(h.cell.x, h.cell.y, h.cell.z);
-    uint8_t m = br->mat[l];
-    if (!m) continue;
-    // Dark, rough surfaces absorb most of it; polished metal reflects.
-    float absorb = MATS[m].metal > 0.5f ? 0.35f : 0.9f;
-    br->temp[l] = std::min(3600.f, br->temp[l] + E * absorb / MATS[m].heatCap);
-    if (B) B->heat.add(v.bindex(h.cell.x, h.cell.y, h.cell.z)); else worldHot.add(v.bindex(h.cell.x, h.cell.y, h.cell.z));
+    float reach = Eray * std::exp(-h.t / absorbLen);
+    float area = std::max(5 * faceA, solidAngle * h.t * h.t);  // even up close, a patch, not a pinpoint
+    float perFace = reach * std::min(1.f, faceA / area);
+    int R = std::min(maxR, (int)std::ceil(std::sqrt(area / PI) / vs));
+    float R2 = (std::sqrt(area / PI) / vs + 0.5f) * (std::sqrt(area / PI) / vs + 0.5f);
+    // The surface voxels in the patch (with open air beside them).
+    struct Cand { Brick* br; int l, bi; };
+    Cand cand[729];
+    int n = 0;
+    for (int dy = -R; dy <= R; dy++)
+      for (int dz = -R; dz <= R; dz++)
+        for (int dx = -R; dx <= R; dx++) {
+          if (dx * dx + dy * dy + dz * dz > R2) continue;
+          int x = h.cell.x + dx, y = h.cell.y + dy, z = h.cell.z + dz;
+          if (!v.inb(x, y, z)) continue;
+          Brick* br = v.brick(x, y, z);
+          if (!br) continue;
+          int l = lidx(x, y, z);
+          if (!br->mat[l]) continue;
+          bool exposed = false;
+          for (auto& d : DIRS6) if (v.mat(x + d[0], y + d[1], z + d[2]) == AIR) { exposed = true; break; }
+          if (exposed) cand[n++] = {br, l, v.bindex(x, y, z)};
+        }
+    if (!n) continue;
+    // A face's share of the patch each, but never more than the ray carries
+    // in all (foliage puts many more surface voxels in a patch than its area).
+    float per = std::min(perFace, reach / n);
+    for (int i = 0; i < n; i++) {
+      Brick* br = cand[i].br;
+      int l = cand[i].l;
+      uint8_t m = br->mat[l];
+      // Dark, rough surfaces absorb most of it; polished metal reflects.
+      float absorb = MATS[m].metal > 0.5f ? 0.35f : 0.9f;
+      br->temp[l] = std::min(3600.f, heatWithLatent(MATS[m], br->temp[l], per * absorb));
+      if (B) B->heat.add(cand[i].bi); else worldHot.add(cand[i].bi);
+    }
   }
 }
 

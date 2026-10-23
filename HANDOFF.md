@@ -364,6 +364,26 @@ Target budgets for the reference laptop at 1080p, default world:
   over the ray length inside each voxel and adds blackbody glow from its
   temperature.
 - Script command `ignite x y z r fuel` sets voxels burning (for tests and screenshots).
+
+### Heat falls off with distance (3.0.1)
+
+- Radiation (`Sim::radiate`): each of 640 rays carries its emitter's share of
+  power and is spread over the patch it covers at that distance (solid angle x
+  d^2, at least 5 faces, at most a 4-voxel radius), attenuated by exp(-d/3 m).
+  A patch never receives more than the ray carries (foliage has more surface
+  voxels than area). What misses nearby surfaces leaves; it is not dumped into
+  the air (that made hot pockets at ground level that lit turf).
+- A voxel radiates exactly what it loses (`radOut`, capped at the heat it holds
+  above its surroundings this step) and the rays carry that same power. Before,
+  the full sigma T^4 went out as rays while the clamp to the surroundings kept
+  the voxel hot: energy from nothing, running fires to the 3600 C cap (the yard
+  radiated 5-80 MW; now ~150 kW).
+- `Material::moisture` (turf 0.6, leaves 0.5): `heatWithLatent` adds the water's
+  latent heat to the enthalpy between 100 and 110 C, statelessly (the place in
+  that band is how much has boiled off).
+- Self-test "a fire doesn't set things alight beyond 1.5 m": a fresh yard
+  (`resetWorld`) burns for 40 s; nothing further than 1.5 m from the campfire or
+  stove may be alight.
 - Startup to interactive title ≤ 5 s on the reference machine.
 
 The project currently allocates a `sizeof(Brick)` (~160 KB) brick whenever a

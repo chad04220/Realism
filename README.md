@@ -53,12 +53,13 @@ The world uses **2.5 cm voxels** (64 voxels per litre). It is about 16 m × 16 m
 - Surfaces trade heat with the air touching them, so a fire's plume heats whatever it drifts over, and wind cools hot metal faster.
 
 **Thermal radiation**
-- Hot surfaces and flames radiate heat across open air to whatever they can see, not just what they touch.
+- Hot surfaces and flames radiate heat across open air to whatever they can see, not just what they touch. It spreads out with the square of the distance and fades through the air, so a fire scorches what is near it rather than igniting things across the yard. A surface radiates exactly the heat it loses.
 - A glowing ingot scorches the bench it hangs over; polished metal reflects most of what reaches it.
 
 **Fire**
 - Flammable materials ignite at their real ignition temperatures.
 - Fire needs an exposed face for oxygen, burns through its fuel and releases heat. Each burnt-out voxel becomes hot smoke or ash.
+- Green turf and leaves hold water (60% and 50% of their weight): it has to boil off before they can burn, so a lawn scorches at a fire's edge instead of carrying a grass fire across the yard.
 - Hot plumes rise and set alight things hanging above, and water puts fires out.
 
 **Phase changes**

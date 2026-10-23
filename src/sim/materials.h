@@ -37,6 +37,7 @@ struct Material {
   uint8_t solidifyTo;    // what a melt of this freezes into
   float boil;            // liquid -> vapour
   float explosive;       // J per litre
+  float moisture;        // kg of water per kg (live grass and leaves): boils off at 100-110 C before it can burn
   float tensile;         // Pa: what a bond within this material holds in tension/bending (0 = holds only by resting)
   const char* info;
   // Derived at start-up:
@@ -58,3 +59,17 @@ inline bool isSpecialElectric(uint8_t m) {
 vec3 matLinear(uint8_t m);  // linear-space albedo
 
 constexpr float AMBIENT = 20.f;
+
+// Temperature after adding dQ joules to one voxel of M at T. A moist material
+// spends the latent heat of its water between 100 and 110 C (where in that
+// band it sits says how much has boiled off), so damp turf and green leaves
+// must be dried by a strong, lasting source before they can catch.
+inline float heatWithLatent(const Material& M, float T, float dQ) {
+  const float C = M.heatCap, L = M.moisture * M.voxMass * 2.26e6f;
+  if (L <= 0) return T + dQ / C;
+  auto H = [&](float t) { return t < 100 ? C * t : t <= 110 ? C * 100 + L * (t - 100) / 10 : C * 100 + L + C * (t - 110); };
+  float h = H(T) + dQ;
+  if (h < C * 100) return h / C;
+  if (h <= C * 100 + L) return 100 + 10 * (h - C * 100) / L;
+  return 110 + (h - C * 100 - L) / C;
+}
